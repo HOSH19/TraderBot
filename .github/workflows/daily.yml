@@ -46,19 +46,30 @@ jobs:
       - name: Verify Actions secrets (names must match exactly)
         run: |
           ok=1
-          if [ -z "${ALPACA_API_KEY}" ]; then
-            echo "::error::ALPACA_API_KEY is empty. Add repository secrets under Actions, OR use Environment secrets and set \`environment:\` on this job to match Settings → Environments. Secret name must be exactly ALPACA_API_KEY."
-            ok=0
-          fi
-          if [ -z "${ALPACA_SECRET_KEY}" ]; then
-            echo "::error::ALPACA_SECRET_KEY is empty — same as above."
-            ok=0
-          fi
+          check() {
+            local name=$1
+            local val=$2
+            local required=$3
+            if [ -z "$val" ]; then
+              if [ "$required" = "required" ]; then
+                echo "::error::${name} is empty. Go to Settings → Environments → traderbot → Environment secrets and add it. Name must match exactly."
+                ok=0
+              else
+                echo "::warning::${name} is empty — optional but some features will be disabled."
+              fi
+            else
+              echo "${name} ✅ (value hidden by GitHub)"
+            fi
+          }
+          check "ALPACA_API_KEY"      "${ALPACA_API_KEY}"      required
+          check "ALPACA_SECRET_KEY"   "${ALPACA_SECRET_KEY}"   required
+          check "TELEGRAM_BOT_TOKEN"  "${TELEGRAM_BOT_TOKEN}"  required
+          check "TELEGRAM_CHAT_ID"    "${TELEGRAM_CHAT_ID}"    required
+          check "NEWSAPI_KEY"         "${NEWSAPI_KEY}"         optional
           if [ "$ok" -eq 0 ]; then
-            echo "If secrets live in an Environment, the job's \`environment:\` name must match that environment (e.g. production)."
+            echo "If secrets live in an Environment, the job's \`environment:\` name must match that environment name exactly."
             exit 1
           fi
-          echo "Alpaca secrets are non-empty (values hidden by GitHub)."
 
       - uses: actions/setup-python@v5
         with:
