@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 45
     # Must match the environment name where your secrets live (Settings → Environments).
     # If secrets are under "Repository secrets" only, you can remove this line.
-    environment: production
+    environment: traderbot
 
     env:
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
