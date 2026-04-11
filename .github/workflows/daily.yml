@@ -25,6 +25,7 @@ jobs:
     env:
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
       ALPACA_SECRET_KEY: ${{ secrets.ALPACA_SECRET_KEY }}
+      ALPACA_PAPER: ${{ secrets.ALPACA_PAPER }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
@@ -63,9 +64,10 @@ jobs:
           }
           check "ALPACA_API_KEY"      "${ALPACA_API_KEY}"      required
           check "ALPACA_SECRET_KEY"   "${ALPACA_SECRET_KEY}"   required
+          check "ALPACA_PAPER"        "${ALPACA_PAPER}"        required
           check "TELEGRAM_BOT_TOKEN"  "${TELEGRAM_BOT_TOKEN}"  required
           check "TELEGRAM_CHAT_ID"    "${TELEGRAM_CHAT_ID}"    required
-          check "NEWSAPI_KEY"         "${NEWSAPI_KEY}"         optional
+          check "NEWSAPI_KEY"         "${NEWSAPI_KEY}"         required
           if [ "$ok" -eq 0 ]; then
             echo "If secrets live in an Environment, the job's \`environment:\` name must match that environment name exactly."
             exit 1
