@@ -1,8 +1,7 @@
 # Daily run: Mon–Fri after US cash close (21:05 UTC ≈ 4:05 PM ET in standard time).
 #
-# Secrets must live under: Settings → Secrets and variables → Actions (this repo).
-# Names must match exactly: ALPACA_API_KEY, ALPACA_SECRET_KEY
-# Environment-scoped secrets only apply if you add: environment: name  to the job.
+# Repository secrets: Settings → Secrets and variables → Actions → Repository secrets
+# Environment secrets: Settings → Environments → <name> → Environment secrets — set `environment:` below to <name>
 
 name: Daily regime trader
 
@@ -19,6 +18,9 @@ jobs:
   run:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # Must match the environment name where your secrets live (Settings → Environments).
+    # If secrets are under "Repository secrets" only, you can remove this line.
+    environment: production
 
     env:
       ALPACA_API_KEY: ${{ secrets.ALPACA_API_KEY }}
@@ -45,15 +47,15 @@ jobs:
         run: |
           ok=1
           if [ -z "${ALPACA_API_KEY}" ]; then
-            echo "::error::ALPACA_API_KEY is empty. Add it at: Settings → Secrets and variables → Actions → New repository secret. Name must be exactly ALPACA_API_KEY (not ALPACA_KEY or ALPACA_API_SECRET)."
+            echo "::error::ALPACA_API_KEY is empty. Add repository secrets under Actions, OR use Environment secrets and set \`environment:\` on this job to match Settings → Environments. Secret name must be exactly ALPACA_API_KEY."
             ok=0
           fi
           if [ -z "${ALPACA_SECRET_KEY}" ]; then
-            echo "::error::ALPACA_SECRET_KEY is empty. Same place — name must be exactly ALPACA_SECRET_KEY."
+            echo "::error::ALPACA_SECRET_KEY is empty — same as above."
             ok=0
           fi
           if [ "$ok" -eq 0 ]; then
-            echo "If you use Organization secrets, open the secret and ensure this repository is allowed."
+            echo "If secrets live in an Environment, the job's \`environment:\` name must match that environment (e.g. production)."
             exit 1
           fi
           echo "Alpaca secrets are non-empty (values hidden by GitHub)."
