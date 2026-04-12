@@ -1,4 +1,3 @@
-# Daily run: Mon–Fri after US cash close (21:05 UTC ≈ 4:05 PM ET in standard time).
 name: Daily regime trader
 
 on:
