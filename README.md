@@ -83,7 +83,7 @@ ALPACA_PAPER=true
 TELEGRAM_BOT_TOKEN=your_bot_token
 TELEGRAM_CHAT_ID=your_chat_id
 
-NEWSAPI_KEY=your_newsapi_key   # free at newsapi.org/register
+NEWSAPI_KEY=your_newsapi_key  
 ```
 
 - **Alpaca keys** — free paper trading account at [alpaca.markets](https://alpaca.markets) → Paper Trading → API Keys
