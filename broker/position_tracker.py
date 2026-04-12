@@ -14,7 +14,16 @@ logger = logging.getLogger(__name__)
 
 
 class PositionTracker:
+    """Keeps PortfolioState in sync with Alpaca and processes order fills."""
+
     def __init__(self, alpaca_client, portfolio_state: PortfolioState):
+        """
+        Initialize PositionTracker.
+
+        Args:
+            alpaca_client: Connected AlpacaClient instance.
+            portfolio_state: Shared PortfolioState object mutated in place.
+        """
         self.client = alpaca_client
         self.portfolio = portfolio_state
         self._lock = threading.Lock()
@@ -56,6 +65,7 @@ class PositionTracker:
             logger.error(f"sync_from_alpaca failed: {e}")
 
     def update_position_price(self, symbol: str, price: float):
+        """Update the current price for a tracked position and record the timestamp."""
         with self._lock:
             if symbol in self.portfolio.positions:
                 self.portfolio.positions[symbol].current_price = price
@@ -92,11 +102,13 @@ class PositionTracker:
         logger.info(f"Fill: {side} {qty} {symbol} @ ${price:.2f} trade_id={trade_id}")
 
     def update_stop(self, symbol: str, new_stop: float):
+        """Update the stop-loss price for the given symbol's tracked position."""
         with self._lock:
             if symbol in self.portfolio.positions:
                 self.portfolio.positions[symbol].stop_loss = new_stop
 
     def _refresh_equity(self):
+        """Pull the latest account values from Alpaca and update P&L fields on the portfolio."""
         try:
             account = self.client.get_account()
             with self._lock:
@@ -111,16 +123,20 @@ class PositionTracker:
             logger.warning(f"_refresh_equity failed: {e}")
 
     def get_position(self, symbol: str) -> Optional[Position]:
+        """Return the Position for the given symbol, or None if not currently held."""
         return self.portfolio.positions.get(symbol)
 
     def get_all_positions(self) -> Dict[str, Position]:
+        """Return a thread-safe snapshot of all open positions keyed by symbol."""
         with self._lock:
             return dict(self.portfolio.positions)
 
     def reset_daily(self):
+        """Reset the daily equity baseline and P&L counter (call once each trading day start)."""
         self.portfolio.daily_start_equity = self.portfolio.equity
         self.portfolio.daily_pnl = 0.0
 
     def reset_weekly(self):
+        """Reset the weekly equity baseline and P&L counter (call once each week start)."""
         self.portfolio.weekly_start_equity = self.portfolio.equity
         self.portfolio.weekly_pnl = 0.0

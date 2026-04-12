@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 
 
 def _annualized_return(equity: pd.Series) -> float:
+    """Return compound annual growth rate assuming 252 trading days per year."""
     if len(equity) < 2:
         return 0.0
     years = len(equity) / 252
@@ -40,6 +41,7 @@ def _max_drawdown(equity: pd.Series) -> tuple:
 
 
 def _sharpe(returns: pd.Series, risk_free_rate: float = 0.045) -> float:
+    """Return annualized Sharpe ratio using excess returns over the risk-free rate."""
     daily_rf = risk_free_rate / 252
     excess = returns - daily_rf
     if excess.std() == 0:
@@ -48,6 +50,7 @@ def _sharpe(returns: pd.Series, risk_free_rate: float = 0.045) -> float:
 
 
 def _sortino(returns: pd.Series, risk_free_rate: float = 0.045) -> float:
+    """Return annualized Sortino ratio, penalizing only downside volatility."""
     daily_rf = risk_free_rate / 252
     excess = returns - daily_rf
     downside = excess[excess < 0].std()
@@ -60,6 +63,12 @@ def compute_metrics(
     result: BacktestResult,
     risk_free_rate: float = 0.045,
 ) -> Dict:
+    """
+    Compute a full suite of performance metrics from a backtest result.
+
+    Returns a dict with keys including total_return_pct, cagr_pct, sharpe,
+    sortino, calmar, max_drawdown_pct, win_rate, profit_factor, and worst-period stats.
+    """
     equity = result.equity_curve.dropna()
     returns = equity.pct_change().dropna()
 
@@ -119,6 +128,12 @@ def compute_metrics(
 
 
 def regime_breakdown(result: BacktestResult) -> pd.DataFrame:
+    """
+    Summarize time spent and trade count per regime label.
+
+    Returns a DataFrame with columns Regime, % Time In, Trades, and Avg Prob,
+    sorted by time descending. Returns empty DataFrame if no regime history.
+    """
     if result.regime_history.empty or not result.trade_log:
         return pd.DataFrame()
 
@@ -138,6 +153,11 @@ def regime_breakdown(result: BacktestResult) -> pd.DataFrame:
 
 
 def confidence_breakdown(result: BacktestResult) -> pd.DataFrame:
+    """
+    Bucket trades by regime probability confidence tier (<50%, 50-60%, 60-70%, 70%+).
+
+    Returns a DataFrame with columns Confidence and Trades.
+    """
     buckets = [(0.0, 0.5, "<50%"), (0.5, 0.6, "50-60%"), (0.6, 0.7, "60-70%"), (0.7, 1.01, "70%+")]
     rows = []
     for lo, hi, label in buckets:
@@ -151,6 +171,11 @@ def confidence_breakdown(result: BacktestResult) -> pd.DataFrame:
 def buy_and_hold_benchmark(
     bars: pd.DataFrame, initial_capital: float = 100_000
 ) -> pd.Series:
+    """
+    Compute equity curve for a simple buy-and-hold strategy.
+
+    Buys at the first close price and holds to the end. Returns a Series of equity values.
+    """
     close = bars["close"] if "close" in bars.columns else bars["Close"]
     shares = initial_capital / float(close.iloc[0])
     return close * shares
@@ -159,6 +184,12 @@ def buy_and_hold_benchmark(
 def sma200_benchmark(
     bars: pd.DataFrame, initial_capital: float = 100_000
 ) -> pd.Series:
+    """
+    Compute equity curve for a 200-day SMA trend-following benchmark.
+
+    Enters long when price crosses above SMA-200, exits when price falls below.
+    Returns a forward-filled Series of equity values.
+    """
     close = bars["close"] if "close" in bars.columns else bars["Close"]
     sma200 = close.rolling(200).mean()
     equity = pd.Series(index=close.index, dtype=float)
@@ -192,6 +223,12 @@ def random_allocation_benchmark(
     rebalance_threshold: float = 0.10,
     seed: int = 42,
 ) -> Dict:
+    """
+    Simulate random allocation changes to produce a Monte Carlo baseline.
+
+    At each bar, randomly decides to rebalance to 60% or 95% allocation.
+    Returns a dict with mean, std, min, and max final return across all simulations.
+    """
     close = bars["close"] if "close" in bars.columns else bars["Close"]
     rng = np.random.default_rng(seed)
     final_returns = []
@@ -224,6 +261,14 @@ def random_allocation_benchmark(
 
 
 def print_report(result: BacktestResult, bars: pd.DataFrame, risk_free_rate: float = 0.045):
+    """
+    Print a formatted Rich report of backtest metrics, regime breakdown, and benchmarks.
+
+    Args:
+        result: Completed BacktestResult from WalkForwardBacktester.run.
+        bars: Original OHLCV DataFrame used for benchmark calculations.
+        risk_free_rate: Annual risk-free rate used in ratio calculations.
+    """
     from rich.console import Console
     from rich.table import Table
 

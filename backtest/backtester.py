@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Trade:
+    """Records a single allocation rebalance event during backtesting."""
+
     bar_index: int
     timestamp: pd.Timestamp
     symbol: str
@@ -39,6 +41,8 @@ class Trade:
 
 @dataclass
 class BacktestResult:
+    """Aggregated output from a completed walk-forward backtest run."""
+
     equity_curve: pd.Series
     trade_log: List[Trade]
     regime_history: pd.DataFrame
@@ -47,7 +51,15 @@ class BacktestResult:
 
 
 class WalkForwardBacktester:
+    """Runs an allocation-based walk-forward backtest using HMM regime detection."""
+
     def __init__(self, config: dict):
+        """
+        Initialize the backtester with the full application config.
+
+        Args:
+            config: Dict containing 'backtest', 'hmm', and 'strategy' sub-configs.
+        """
         self.cfg = config
         self.bt_cfg = config.get("backtest", {})
 

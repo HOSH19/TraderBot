@@ -19,7 +19,6 @@ logger = logging.getLogger(__name__)
 
 NEWSAPI_URL = "https://newsapi.org/v2/everything"
 
-# Map tickers to more meaningful search terms for better article matching
 TICKER_SEARCH_TERMS = {
     "SPY": "S&P 500 stock market",
     "QQQ": "Nasdaq QQQ ETF",

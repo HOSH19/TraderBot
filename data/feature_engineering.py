@@ -9,32 +9,43 @@ import pandas as pd
 
 
 def compute_log_returns(close: pd.Series, period: int) -> pd.Series:
+    """Return log returns of close price over the given lookback period."""
     return np.log(close / close.shift(period))
 
 
 def compute_realized_volatility(close: pd.Series, window: int = 20) -> pd.Series:
+    """Return rolling realized volatility as the standard deviation of daily log returns."""
     log_ret = compute_log_returns(close, 1)
     return log_ret.rolling(window).std()
 
 
 def compute_vol_ratio(close: pd.Series, short: int = 5, long: int = 20) -> pd.Series:
+    """Return the ratio of short-term to long-term realized volatility, indicating vol regime changes."""
     short_vol = compute_log_returns(close, 1).rolling(short).std()
     long_vol = compute_log_returns(close, 1).rolling(long).std()
     return short_vol / (long_vol + 1e-10)
 
 
 def compute_normalized_volume(volume: pd.Series, window: int = 50) -> pd.Series:
+    """Return volume z-scored against its own rolling mean and standard deviation."""
     mean = volume.rolling(window).mean()
     std = volume.rolling(window).std()
     return (volume - mean) / (std + 1e-10)
 
 
 def compute_volume_trend(volume: pd.Series, sma_window: int = 10) -> pd.Series:
+    """Return the first difference of the rolling SMA of volume, capturing directional trend."""
     sma = volume.rolling(sma_window).mean()
     return sma.diff()
 
 
 def compute_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """
+    Compute the Average Directional Index (ADX) to measure trend strength.
+
+    Uses exponential smoothing on the true range and directional movement components.
+    Returns values between 0 and 100; higher values indicate a stronger trend.
+    """
     tr = pd.concat([
         high - low,
         (high - close.shift(1)).abs(),
@@ -58,11 +69,13 @@ def compute_adx(high: pd.Series, low: pd.Series, close: pd.Series, period: int =
 
 
 def compute_sma_slope(close: pd.Series, window: int = 50) -> pd.Series:
+    """Return the one-period change in the rolling SMA of close price, approximating its slope."""
     sma = close.rolling(window).mean()
     return sma.diff()
 
 
 def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
+    """Compute the Relative Strength Index (RSI), returning values in the range [0, 100]."""
     delta = close.diff()
     gain = delta.clip(lower=0).ewm(span=period, adjust=False).mean()
     loss = (-delta.clip(upper=0)).ewm(span=period, adjust=False).mean()
@@ -71,6 +84,7 @@ def compute_rsi(close: pd.Series, period: int = 14) -> pd.Series:
 
 
 def compute_rsi_zscore(close: pd.Series, rsi_period: int = 14, zscore_window: int = 252) -> pd.Series:
+    """Return a rolling z-score of RSI, normalising its level relative to its historical distribution."""
     rsi = compute_rsi(close, rsi_period)
     mean = rsi.rolling(zscore_window).mean()
     std = rsi.rolling(zscore_window).std()
@@ -78,15 +92,18 @@ def compute_rsi_zscore(close: pd.Series, rsi_period: int = 14, zscore_window: in
 
 
 def compute_distance_from_sma(close: pd.Series, window: int = 200) -> pd.Series:
+    """Return the fractional deviation of close price from its rolling SMA (positive = above SMA)."""
     sma = close.rolling(window).mean()
     return (close - sma) / (sma + 1e-10)
 
 
 def compute_roc(close: pd.Series, period: int = 10) -> pd.Series:
+    """Return the Rate of Change (ROC) of close price over the given lookback period."""
     return (close - close.shift(period)) / (close.shift(period) + 1e-10)
 
 
 def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """Compute the Average True Range (ATR) using exponential smoothing over the true range."""
     tr = pd.concat([
         high - low,
         (high - close.shift(1)).abs(),
@@ -96,11 +113,13 @@ def compute_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int =
 
 
 def compute_normalized_atr(high: pd.Series, low: pd.Series, close: pd.Series, period: int = 14) -> pd.Series:
+    """Return ATR divided by close price, expressing volatility as a fraction of price level."""
     atr = compute_atr(high, low, close, period)
     return atr / (close + 1e-10)
 
 
 def rolling_zscore(series: pd.Series, window: int = 252) -> pd.Series:
+    """Standardise a series using a rolling mean and standard deviation over the given window."""
     mean = series.rolling(window).mean()
     std = series.rolling(window).std()
     return (series - mean) / (std + 1e-10)

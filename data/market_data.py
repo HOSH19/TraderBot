@@ -15,7 +15,10 @@ logger = logging.getLogger(__name__)
 
 
 class MarketData:
+    """Provides historical and real-time market data via the Alpaca API, including WebSocket bar streaming."""
+
     def __init__(self, alpaca_client):
+        """Initialise with an AlpacaClient instance that exposes a `data_client` attribute."""
         self.client = alpaca_client
         self._bar_callbacks: List[Callable] = []
         self._quote_callbacks: List[Callable] = []
@@ -31,6 +34,12 @@ class MarketData:
         end: Optional[datetime] = None,
         limit: int = 2000,
     ) -> pd.DataFrame:
+        """
+        Fetch historical OHLCV bars for a symbol from Alpaca, with gap-filling applied.
+
+        Returns a DataFrame indexed by date with columns [open, high, low, close, volume],
+        or an empty DataFrame on failure.
+        """
         from alpaca.data.requests import StockBarsRequest
         from alpaca.data.timeframe import TimeFrame
 
@@ -77,7 +86,6 @@ class MarketData:
         """Forward-fill gaps from weekends/holidays/halts."""
         if df.empty:
             return df
-        # Normalize to timezone-naive dates so bdate_range aligns correctly
         if hasattr(df.index, "tz") and df.index.tz is not None:
             df.index = df.index.tz_convert("UTC").tz_localize(None)
         df.index = pd.to_datetime(df.index).normalize()
@@ -92,6 +100,7 @@ class MarketData:
         return df.dropna(subset=["close"])
 
     def get_latest_bar(self, symbol: str) -> Optional[pd.Series]:
+        """Fetch the most recent OHLCV bar for a symbol; returns None on failure."""
         from alpaca.data.requests import StockLatestBarRequest
         from alpaca.data.enums import DataFeed
         try:
@@ -107,6 +116,7 @@ class MarketData:
             return None
 
     def get_latest_quote(self, symbol: str) -> Optional[dict]:
+        """Fetch the latest bid/ask quote for a symbol, including spread percentage; returns None on failure."""
         from alpaca.data.requests import StockLatestQuoteRequest
         from alpaca.data.enums import DataFeed
         try:
@@ -119,6 +129,7 @@ class MarketData:
             return None
 
     def get_snapshot(self, symbol: str) -> Optional[dict]:
+        """Fetch the latest trade price and daily bar snapshot for a symbol; returns None on failure."""
         from alpaca.data.requests import StockSnapshotRequest
         from alpaca.data.enums import DataFeed
         try:
@@ -140,9 +151,15 @@ class MarketData:
         self._start_stream(symbols)
 
     def subscribe_quotes(self, symbols: List[str], callback: Callable):
+        """Register a callback to be invoked on incoming quote updates for the given symbols."""
         self._quote_callbacks.append(callback)
 
     def _start_stream(self, symbols: List[str]):
+        """
+        Open a WebSocket connection for the given symbols and dispatch bar events to registered callbacks.
+
+        Runs the stream in a background daemon thread so it does not block the main process.
+        """
         from alpaca.data.live import StockDataStream
         import os
 
@@ -152,6 +169,7 @@ class MarketData:
         stream = StockDataStream(api_key, secret_key)
 
         async def _on_bar(bar):
+            """Dispatch an incoming bar event to all registered bar callbacks."""
             for cb in self._bar_callbacks:
                 try:
                     cb(bar)
@@ -161,6 +179,7 @@ class MarketData:
         stream.subscribe_bars(_on_bar, *symbols)
 
         def _run():
+            """Entry point for the background thread that runs the WebSocket event loop."""
             logger.info(f"WebSocket stream started for {symbols}")
             stream.run()
 
@@ -169,6 +188,7 @@ class MarketData:
         self._stream_thread.start()
 
     def stop_stream(self):
+        """Gracefully stop the active WebSocket stream, if one is running."""
         if self._stream:
             try:
                 self._stream.stop()
@@ -177,4 +197,5 @@ class MarketData:
                 logger.warning(f"Error stopping stream: {e}")
 
     def get_cached_bars(self, symbol: str) -> Optional[pd.DataFrame]:
+        """Return the last DataFrame fetched by `get_historical_bars` for the symbol, or None if not cached."""
         return self._bars_cache.get(symbol)

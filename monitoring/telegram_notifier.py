@@ -43,14 +43,23 @@ def _format_news_section(news: dict) -> list:
 
 
 class TelegramNotifier:
+    """Sends Telegram messages for daily briefings, market summaries, and trade alerts."""
+
     def __init__(self):
-        self.token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-        self.chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+        """Initialize the notifier, reading credentials from environment variables."""
+        token = os.getenv("TELEGRAM_BOT_TOKEN", "") or ""
+        chat_id = os.getenv("TELEGRAM_CHAT_ID", "") or ""
+        self.token = token.strip()
+        self.chat_id = str(chat_id).strip()
         self.enabled = bool(self.token and self.chat_id)
         if not self.enabled:
             logger.info("Telegram not configured — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
 
     def send(self, message: str) -> bool:
+        """Send an HTML-formatted message to the configured Telegram chat.
+
+        Returns True on success, False if disabled or on any delivery failure.
+        """
         if not self.enabled:
             logger.info(f"[TELEGRAM DISABLED] {message}")
             return False
@@ -91,6 +100,12 @@ class TelegramNotifier:
         news: Optional[dict] = None,
         error: Optional[str] = None,
     ) -> bool:
+        """Compose and send the end-of-day trading briefing message.
+
+        Includes regime state, portfolio P&L, today's signals, orders placed,
+        open positions, top news headlines, and any error encountered.
+        Returns True if the message was delivered successfully.
+        """
         mode_tag = "📄 PAPER" if paper_trading else "💵 LIVE"
         regime_emoji = {
             "BULL": "🐂", "STRONG_BULL": "🚀", "EUPHORIA": "🎉",
@@ -174,6 +189,10 @@ class TelegramNotifier:
         hmm_age_days: int = 0,
         news: Optional[dict] = None,
     ) -> bool:
+        """Send a market-closed summary with regime state, portfolio snapshot, and price data.
+
+        Used on non-trading days or when the market is closed. Returns True on success.
+        """
         mode_tag = "📄 PAPER" if paper_trading else "💵 LIVE"
         regime_emoji = {
             "BULL": "🐂", "STRONG_BULL": "🚀", "EUPHORIA": "🎉",
@@ -229,6 +248,12 @@ class TelegramNotifier:
         return self.send("\n".join(lines))
 
     def send_alert(self, event: str, detail: str) -> bool:
+        """Send a critical-event alert message with an appropriate emoji prefix.
+
+        Args:
+            event: One of 'circuit_breaker', 'regime_change', 'large_pnl', 'error', 'halted'.
+            detail: Human-readable description of the event.
+        """
         emoji_map = {
             "circuit_breaker": "🚨",
             "regime_change": "🔄",

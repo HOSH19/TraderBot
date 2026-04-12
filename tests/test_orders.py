@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _make_signal(symbol="SPY", entry=400.0, stop=390.0):
+    """Build a LONG Signal fixture with 20% allocation, 1.0× leverage, and the given entry/stop prices."""
     from core.regime_strategies import Signal
     return Signal(
         symbol=symbol, direction="LONG", confidence=0.75,
@@ -25,11 +26,13 @@ def _make_signal(symbol="SPY", entry=400.0, stop=390.0):
 
 
 def _make_risk_decision(signal):
+    """Wrap a signal in an approved RiskDecision fixture."""
     from core.risk_manager import RiskDecision
     return RiskDecision(approved=True, modified_signal=signal, rejection_reason="")
 
 
 def _mock_alpaca():
+    """Return a MagicMock Alpaca client whose get_account().equity is $100,000."""
     client = MagicMock()
     account = MagicMock()
     account.equity = "100000"
@@ -38,7 +41,10 @@ def _mock_alpaca():
 
 
 class TestOrderExecutorDryRun:
+    """Tests for OrderExecutor operating in dry-run mode; no real API calls are made."""
+
     def test_dry_run_submit_returns_trade_id(self):
+        """submit_order in dry-run mode must return a non-None trade ID that includes the ticker symbol."""
         from broker.order_executor import OrderExecutor
         client = _mock_alpaca()
         executor = OrderExecutor(client, dry_run=True)
@@ -49,6 +55,7 @@ class TestOrderExecutorDryRun:
         assert "SPY" in order_id
 
     def test_rejected_signal_not_submitted(self):
+        """submit_order must return None and skip execution when the RiskDecision is not approved."""
         from broker.order_executor import OrderExecutor
         from core.risk_manager import RiskDecision
         client = _mock_alpaca()
@@ -59,6 +66,7 @@ class TestOrderExecutorDryRun:
         assert order_id is None
 
     def test_modify_stop_only_tightens(self):
+        """modify_stop must reject a new stop that is below (looser than) the current stop."""
         from broker.order_executor import OrderExecutor
         client = _mock_alpaca()
         executor = OrderExecutor(client, dry_run=True)
@@ -66,6 +74,7 @@ class TestOrderExecutorDryRun:
         assert result is False
 
     def test_modify_stop_tighter_accepted(self):
+        """modify_stop must accept a new stop that is above (tighter than) the current stop."""
         from broker.order_executor import OrderExecutor
         client = _mock_alpaca()
         executor = OrderExecutor(client, dry_run=True)
@@ -73,6 +82,7 @@ class TestOrderExecutorDryRun:
         assert result is True
 
     def test_close_all_dry_run(self):
+        """close_all_positions in dry-run mode must return True without calling the real API."""
         from broker.order_executor import OrderExecutor
         client = _mock_alpaca()
         executor = OrderExecutor(client, dry_run=True)
@@ -81,6 +91,7 @@ class TestOrderExecutorDryRun:
         client.trading_client.close_all_positions.assert_not_called()
 
     def test_trade_id_is_unique(self):
+        """Each successive submit_order call must produce a distinct trade ID."""
         from broker.order_executor import OrderExecutor
         client = _mock_alpaca()
         executor = OrderExecutor(client, dry_run=True)
@@ -93,6 +104,7 @@ class TestOrderExecutorDryRun:
         assert len(ids) == 10, "trade_ids should be unique"
 
     def test_bracket_order_dry_run(self):
+        """submit_bracket_order in dry-run mode must return a non-None order ID for a signal with a take-profit."""
         from broker.order_executor import OrderExecutor
         from core.regime_strategies import Signal
         client = _mock_alpaca()

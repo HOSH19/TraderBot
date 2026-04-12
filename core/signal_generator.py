@@ -14,7 +14,10 @@ logger = logging.getLogger(__name__)
 
 
 class SignalGenerator:
+    """Combines the HMM regime detector and strategy orchestrator into a single signal pipeline."""
+
     def __init__(self, hmm_engine: HMMEngine, orchestrator: StrategyOrchestrator, config: dict):
+        """Initialize with a trained HMMEngine, a StrategyOrchestrator, and config dict."""
         self.hmm = hmm_engine
         self.orchestrator = orchestrator
         self.cfg = config

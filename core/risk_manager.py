@@ -24,6 +24,8 @@ TRADING_HALTED_LOCK = "trading_halted.lock"
 
 @dataclass
 class Position:
+    """Represents an open position held by the bot."""
+
     symbol: str
     shares: float
     entry_price: float
@@ -36,21 +38,26 @@ class Position:
 
     @property
     def unrealized_pnl(self) -> float:
+        """Unrealized P&L in dollars for this position."""
         return (self.current_price - self.entry_price) * self.shares
 
     @property
     def unrealized_pnl_pct(self) -> float:
+        """Unrealized P&L as a fraction of entry value."""
         if self.entry_price == 0:
             return 0.0
         return (self.current_price / self.entry_price - 1)
 
     @property
     def holding_period_hours(self) -> float:
+        """Hours elapsed since the position was entered."""
         return (datetime.utcnow() - self.entry_time).total_seconds() / 3600
 
 
 @dataclass
 class PortfolioState:
+    """Snapshot of the current portfolio used by risk checks and circuit breakers."""
+
     equity: float
     cash: float
     buying_power: float
@@ -60,41 +67,48 @@ class PortfolioState:
     peak_equity: float = 0.0
     daily_start_equity: float = 0.0
     weekly_start_equity: float = 0.0
-    circuit_breaker_status: str = "NORMAL"  # NORMAL, REDUCED, HALTED_DAY, HALTED_WEEK, HALTED_PEAK
+    circuit_breaker_status: str = "NORMAL"
     flicker_rate: int = 0
     last_updated: datetime = field(default_factory=datetime.utcnow)
 
     @property
     def drawdown_from_peak(self) -> float:
+        """Current equity drawdown as a fraction of the all-time peak equity."""
         if self.peak_equity == 0:
             return 0.0
         return (self.equity - self.peak_equity) / self.peak_equity
 
     @property
     def daily_drawdown(self) -> float:
+        """Equity change today as a fraction of the day-open equity."""
         if self.daily_start_equity == 0:
             return 0.0
         return (self.equity - self.daily_start_equity) / self.daily_start_equity
 
     @property
     def weekly_drawdown(self) -> float:
+        """Equity change this week as a fraction of the week-open equity."""
         if self.weekly_start_equity == 0:
             return 0.0
         return (self.equity - self.weekly_start_equity) / self.weekly_start_equity
 
     @property
     def total_exposure(self) -> float:
+        """Sum of all position market values as a fraction of equity."""
         if self.equity == 0:
             return 0.0
         return sum(p.shares * p.current_price for p in self.positions.values()) / self.equity
 
     @property
     def n_positions(self) -> int:
+        """Number of currently open positions."""
         return len(self.positions)
 
 
 @dataclass
 class RiskDecision:
+    """Outcome of a risk validation check, including the (possibly modified) signal."""
+
     approved: bool
     modified_signal: Optional[Signal]
     rejection_reason: str
@@ -102,7 +116,10 @@ class RiskDecision:
 
 
 class CircuitBreaker:
+    """Monitors drawdown thresholds and halts or reduces trading when limits are breached."""
+
     def __init__(self, config: dict):
+        """Initialize circuit breaker with risk configuration thresholds."""
         self.cfg = config
         self._trigger_history: List[Dict] = []
 
@@ -142,6 +159,7 @@ class CircuitBreaker:
         return "NORMAL", ""
 
     def _write_lock_file(self, portfolio: PortfolioState):
+        """Write the halt lock file to disk, requiring manual deletion to resume trading."""
         with open(TRADING_HALTED_LOCK, "w") as f:
             f.write(
                 f"Trading halted at {datetime.utcnow().isoformat()}\n"
@@ -152,6 +170,7 @@ class CircuitBreaker:
         logger.critical(f"Peak DD limit hit. Created {TRADING_HALTED_LOCK}. Manual deletion required.")
 
     def update(self, portfolio: PortfolioState) -> Tuple[str, str]:
+        """Run a circuit-breaker check and log any triggered action, returning (action, reason)."""
         action, reason = self.check(portfolio)
         if action != "NORMAL":
             self._trigger_history.append({
@@ -167,17 +186,23 @@ class CircuitBreaker:
         return action, reason
 
     def reset_daily(self):
+        """Reset any intra-day circuit-breaker state at the start of a new trading day."""
         pass
 
     def reset_weekly(self):
+        """Reset any intra-week circuit-breaker state at the start of a new trading week."""
         pass
 
     def get_history(self) -> List[Dict]:
+        """Return the list of all circuit-breaker trigger events recorded so far."""
         return self._trigger_history
 
 
 class RiskManager:
+    """Validates and modifies trade signals against portfolio-level risk constraints."""
+
     def __init__(self, config: dict):
+        """Initialize the risk manager and attach a CircuitBreaker instance."""
         self.cfg = config
         self.risk_cfg = config.get("risk", {})
         self.circuit_breaker = CircuitBreaker(self.risk_cfg)
@@ -190,6 +215,13 @@ class RiskManager:
         signal: Signal,
         portfolio: PortfolioState,
     ) -> RiskDecision:
+        """
+        Apply all risk checks to signal and return a RiskDecision.
+
+        Checks include circuit breakers, stop-loss presence, daily trade limits,
+        duplicate-trade blocks, max concurrent positions, position sizing, leverage,
+        and total exposure. May approve, reject, or return a modified signal.
+        """
         modifications = []
 
         cb_action, cb_reason = self.circuit_breaker.update(portfolio)
@@ -266,6 +298,11 @@ class RiskManager:
     def _apply_position_sizing(
         self, signal: Signal, portfolio: PortfolioState
     ) -> Tuple[Signal, List[str]]:
+        """
+        Size the position using risk-per-trade and max-single-position caps.
+
+        Returns the adjusted signal and a list of modification messages.
+        """
         mods = []
         max_risk = self.risk_cfg.get("max_risk_per_trade", 0.01)
         min_pos = self.risk_cfg.get("min_position_dollars", 100.0)
@@ -300,6 +337,7 @@ class RiskManager:
     def _check_leverage(
         self, signal: Signal, portfolio: PortfolioState
     ) -> Tuple[bool, str]:
+        """Return (allowed, reason) for the requested leverage given current portfolio conditions."""
         max_lev = self.risk_cfg.get("max_leverage", 1.25)
 
         if signal.leverage > max_lev:
@@ -320,6 +358,7 @@ class RiskManager:
     def _check_exposure(
         self, signal: Signal, portfolio: PortfolioState
     ) -> Tuple[bool, str]:
+        """Return (allowed, reason) checking that adding this signal won't exceed max total exposure."""
         max_exp = self.risk_cfg.get("max_exposure", 0.80)
         current_exp = portfolio.total_exposure
         new_exp = current_exp + signal.position_size_pct * signal.leverage
@@ -330,8 +369,10 @@ class RiskManager:
         return True, ""
 
     def reset_daily_counters(self):
+        """Reset the daily trade count at the start of each trading day."""
         self._daily_trade_count = 0
         logger.info("Daily trade counters reset")
 
     def reset_weekly_counters(self):
+        """Reset weekly-level risk counters at the start of each trading week."""
         logger.info("Weekly counters reset")

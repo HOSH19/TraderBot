@@ -19,6 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _make_synthetic_bars(n: int = 700, seed: int = 42) -> pd.DataFrame:
+    """Generate synthetic OHLCV bars with alternating volatility regimes for look-ahead tests."""
     rng = np.random.default_rng(seed)
     prices = [100.0]
     for i in range(n - 1):
@@ -37,6 +38,7 @@ def _make_synthetic_bars(n: int = 700, seed: int = 42) -> pd.DataFrame:
 
 
 def _load_config():
+    """Load the project settings.yaml config and return it as a dict."""
     import yaml
     cfg_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
     with open(cfg_path) as f:

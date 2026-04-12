@@ -17,6 +17,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _load_config():
+    """Load the project settings.yaml config and return it as a dict."""
     import yaml
     cfg_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
     with open(cfg_path) as f:
@@ -24,12 +25,15 @@ def _load_config():
 
 
 def _get_client():
+    """Instantiate and return a live AlpacaClient using settings from the config file."""
     from broker.alpaca_client import AlpacaClient
     config = _load_config()
     return AlpacaClient(config)
 
 
 class TestAlpacaCredentials:
+    """Live connectivity tests for the Alpaca API; require valid credentials in .env."""
+
     def test_env_vars_present(self):
         """Check that API keys are set in environment."""
         from dotenv import load_dotenv

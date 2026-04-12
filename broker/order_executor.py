@@ -14,17 +14,27 @@ from core.risk_manager import RiskDecision
 
 logger = logging.getLogger(__name__)
 
-LIMIT_OFFSET_PCT = 0.001   # ±0.1%
+LIMIT_OFFSET_PCT = 0.001
 ORDER_TIMEOUT_SECONDS = 30
 
 
 class OrderExecutor:
+    """Handles order submission, modification, and cancellation via Alpaca."""
+
     def __init__(self, alpaca_client, dry_run: bool = False):
+        """
+        Initialize OrderExecutor.
+
+        Args:
+            alpaca_client: Connected AlpacaClient instance.
+            dry_run: If True, log intended actions without submitting real orders.
+        """
         self.client = alpaca_client
         self.dry_run = dry_run
         self._open_orders: dict = {}
 
     def _gen_trade_id(self, symbol: str) -> str:
+        """Generate a short unique trade identifier linking signal to fill."""
         return f"{symbol}-{uuid.uuid4().hex[:8]}"
 
     def submit_order(
@@ -170,6 +180,11 @@ class OrderExecutor:
             return False
 
     def cancel_order(self, order_id: str) -> bool:
+        """
+        Cancel an open order by its Alpaca order ID.
+
+        Returns True on success, False on error.
+        """
         if self.dry_run:
             logger.info(f"[DRY-RUN] Would cancel order {order_id}")
             return True
@@ -181,6 +196,11 @@ class OrderExecutor:
             return False
 
     def close_position(self, symbol: str) -> bool:
+        """
+        Close the entire open position for the given symbol.
+
+        Returns True on success, False on error.
+        """
         if self.dry_run:
             logger.info(f"[DRY-RUN] Would close position {symbol}")
             return True
@@ -193,6 +213,11 @@ class OrderExecutor:
             return False
 
     def close_all_positions(self) -> bool:
+        """
+        Close all open positions and cancel all pending orders.
+
+        Returns True on success, False on error.
+        """
         if self.dry_run:
             logger.info("[DRY-RUN] Would close all positions")
             return True

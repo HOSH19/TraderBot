@@ -31,6 +31,8 @@ REGIME_LABELS = {
 
 @dataclass
 class RegimeInfo:
+    """Metadata describing a detected HMM regime, including allocation and risk parameters."""
+
     regime_id: int
     regime_name: str
     expected_return: float
@@ -43,6 +45,8 @@ class RegimeInfo:
 
 @dataclass
 class RegimeState:
+    """Snapshot of the current regime produced by the stability filter."""
+
     label: str
     state_id: int
     probability: float
@@ -53,7 +57,10 @@ class RegimeState:
 
 
 class HMMEngine:
+    """Gaussian HMM-based market regime detector with BIC model selection and stability filtering."""
+
     def __init__(self, config: dict):
+        """Initialize the HMM engine with configuration settings."""
         self.config = config
         self.model: Optional[hmm.GaussianHMM] = None
         self.n_regimes: int = 0
@@ -68,10 +75,6 @@ class HMMEngine:
         self._pending_bars: int = 0
         self._flicker_history: List[int] = []
         self._cached_alpha: Optional[np.ndarray] = None
-
-    # ------------------------------------------------------------------
-    # Training
-    # ------------------------------------------------------------------
 
     def train(self, bars) -> "HMMEngine":
         """Train with BIC model selection. bars is a DataFrame with OHLCV columns."""
@@ -115,6 +118,7 @@ class HMMEngine:
     def _fit_with_bic(
         self, X: np.ndarray, n: int, n_init: int, cov_type: str
     ) -> Tuple[float, hmm.GaussianHMM]:
+        """Fit a GaussianHMM with n_init random seeds and return the (BIC, best_model) pair."""
         best_score = float("-inf")
         best_model = None
 
@@ -156,8 +160,8 @@ class HMMEngine:
                 mean_returns.append(0.0)
                 mean_vols.append(1.0)
                 continue
-            ret_col = 0  # ret_1 is first feature
-            vol_col = 3  # realized_vol is 4th feature
+            ret_col = 0
+            vol_col = 3
             mean_returns.append(feature_matrix[mask, ret_col].mean())
             mean_vols.append(np.abs(feature_matrix[mask, vol_col]).mean())
 
@@ -201,10 +205,6 @@ class HMMEngine:
             ))
 
         logger.info(f"Regime infos built: {[(r.regime_name, r.recommended_strategy_type) for r in self.regime_infos]}")
-
-    # ------------------------------------------------------------------
-    # Forward algorithm — no look-ahead
-    # ------------------------------------------------------------------
 
     def predict_regime_filtered(self, bars) -> RegimeState:
         """
@@ -278,19 +278,17 @@ class HMMEngine:
 
     @staticmethod
     def _normalize_log(log_alpha: np.ndarray) -> np.ndarray:
+        """Convert log-space alpha values to a normalized probability distribution."""
         max_val = np.max(log_alpha)
         shifted = log_alpha - max_val
         alpha = np.exp(shifted)
         total = alpha.sum()
         return alpha / (total + 1e-300) if total > 0 else np.ones_like(alpha) / len(alpha)
 
-    # ------------------------------------------------------------------
-    # Stability filter
-    # ------------------------------------------------------------------
-
     def _apply_stability_filter(
         self, raw_state_id: int, probability: float, state_probs: np.ndarray
     ) -> RegimeState:
+        """Require stability_bars consecutive signals before confirming a regime change."""
         stability_bars = self.config.get("stability_bars", 3)
         confirmed = False
 
@@ -355,15 +353,12 @@ class HMMEngine:
             consecutive_bars=self._consecutive_bars,
         )
 
-    # ------------------------------------------------------------------
-    # Utility methods
-    # ------------------------------------------------------------------
-
     def get_regime_stability(self) -> int:
         """Consecutive bars in current confirmed regime."""
         return self._consecutive_bars
 
     def get_transition_matrix(self) -> np.ndarray:
+        """Return the trained HMM transition probability matrix."""
         if self.model is None:
             raise RuntimeError("Model not trained.")
         return self.model.transmat_
@@ -377,18 +372,17 @@ class HMMEngine:
         return sum(self._flicker_history)
 
     def is_flickering(self) -> bool:
+        """Return True if the number of recent regime changes exceeds the configured threshold."""
         return self.get_regime_flicker_rate() > self.config.get("flicker_threshold", 4)
 
     def get_current_regime_info(self) -> Optional[RegimeInfo]:
+        """Return the RegimeInfo for the currently active regime, or None if not yet set."""
         if self._current_state is None or not self.regime_infos:
             return None
         return self.regime_infos[self._current_state.state_id]
 
-    # ------------------------------------------------------------------
-    # Persistence
-    # ------------------------------------------------------------------
-
     def save(self, path: str):
+        """Serialize the trained model and metadata to a pickle file at path."""
         payload = {
             "model": self.model,
             "n_regimes": self.n_regimes,
@@ -402,6 +396,7 @@ class HMMEngine:
         logger.info(f"HMM model saved to {path}")
 
     def load(self, path: str) -> "HMMEngine":
+        """Load a previously saved HMM model from path and return self."""
         with open(path, "rb") as f:
             payload = pickle.load(f)
         self.model = payload["model"]
@@ -418,6 +413,7 @@ class HMMEngine:
         return self
 
     def is_stale(self, max_days: int = 7) -> bool:
+        """Return True if the model is untrained or was trained more than max_days ago."""
         if self.training_date is None:
             return True
         age = (datetime.utcnow() - self.training_date).days

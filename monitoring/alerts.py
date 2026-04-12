@@ -24,7 +24,16 @@ ALERT_EVENTS = [
 
 
 class AlertManager:
+    """Dispatches rate-limited alerts for critical trading events via log, webhook, and email."""
+
     def __init__(self, config: dict):
+        """Initialize the alert manager with rate-limit settings and optional delivery targets.
+
+        Args:
+            config: Full application config dict; reads monitoring.alert_rate_limit_minutes,
+                    alerts.email, and alerts.webhook_url. Environment variables
+                    ALERT_EMAIL and ALERT_WEBHOOK_URL override config values.
+        """
         self.cfg = config
         self.rate_limit_secs = config.get("monitoring", {}).get("alert_rate_limit_minutes", 15) * 60
         self._last_sent: dict = {}
@@ -32,6 +41,11 @@ class AlertManager:
         self._webhook = os.getenv("ALERT_WEBHOOK_URL") or config.get("alerts", {}).get("webhook_url", "")
 
     def send(self, event_type: str, message: str):
+        """Emit an alert, suppressing duplicates within the rate-limit window.
+
+        Logs at WARNING level and forwards to webhook/email if configured.
+        Silently returns if the same event_type was sent within the last rate-limit period.
+        """
         now = time.time()
         last = self._last_sent.get(event_type, 0)
         if now - last < self.rate_limit_secs:
@@ -46,6 +60,7 @@ class AlertManager:
             self._send_email(event_type, message)
 
     def _send_webhook(self, event_type: str, message: str):
+        """POST the alert payload to the configured webhook URL. Errors are logged at DEBUG."""
         try:
             import requests
             payload = {"event": event_type, "message": message, "timestamp": time.time()}
@@ -56,6 +71,7 @@ class AlertManager:
             logger.debug(f"Webhook failed: {e}")
 
     def _send_email(self, event_type: str, message: str):
+        """Send an alert email to the configured address via localhost SMTP. Errors are logged at DEBUG."""
         try:
             import smtplib
             from email.message import EmailMessage
@@ -72,6 +88,12 @@ class AlertManager:
             logger.debug(f"Email alert failed: {e}")
 
     def on_regime_state(self, current_state, previous_state):
+        """Fire a regime_change alert when the confirmed label transitions between states.
+
+        Args:
+            current_state: Current RegimeState object (must have label, probability, is_confirmed).
+            previous_state: Previous RegimeState object, or None on first call.
+        """
         if previous_state and current_state:
             if (hasattr(previous_state, "label") and hasattr(current_state, "label")
                     and previous_state.label != current_state.label
@@ -87,15 +109,30 @@ class AlertManager:
                 pass
 
     def on_large_pnl(self, symbol: str, pnl_pct: float, threshold: float = 0.05):
+        """Send a large_pnl alert when a position's gain or loss exceeds the threshold.
+
+        Args:
+            symbol: Ticker symbol of the position.
+            pnl_pct: Unrealized P&L as a decimal (e.g. 0.07 for +7%).
+            threshold: Absolute P&L fraction that triggers the alert (default 5%).
+        """
         if abs(pnl_pct) >= threshold:
             direction = "gain" if pnl_pct > 0 else "loss"
             self.send("large_pnl", f"Large {direction}: {symbol} {pnl_pct*100:+.1f}%")
 
     def on_data_feed_down(self, symbol: str):
+        """Send a data_feed_down alert when price data cannot be retrieved for a symbol."""
         self.send("data_feed_down", f"Data feed down for {symbol}")
 
     def on_api_error(self, error: str):
+        """Send an api_lost alert when the Alpaca broker API raises an unexpected error."""
         self.send("api_lost", f"Alpaca API error: {error}")
 
     def on_flicker_exceeded(self, flicker_rate: int, threshold: int):
+        """Send a flicker_exceeded alert when the HMM regime changes too frequently.
+
+        Args:
+            flicker_rate: Number of regime transitions observed in the flicker window.
+            threshold: Maximum allowed transitions before triggering the alert.
+        """
         self.send("flicker_exceeded", f"HMM flicker rate {flicker_rate} exceeds threshold {threshold}")

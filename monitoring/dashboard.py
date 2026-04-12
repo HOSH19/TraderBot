@@ -15,7 +15,14 @@ logger = logging.getLogger(__name__)
 
 
 class Dashboard:
+    """Terminal-based live dashboard rendered with the rich library."""
+
     def __init__(self, config: dict):
+        """Initialize the dashboard with configuration and empty signal history.
+
+        Args:
+            config: Full application config dict; reads monitoring.dashboard_refresh_seconds.
+        """
         self.cfg = config
         self.refresh_secs = config.get("monitoring", {}).get("dashboard_refresh_seconds", 5)
         self._last_refresh = 0.0
@@ -25,6 +32,11 @@ class Dashboard:
         self._hmm_training_date: Optional[datetime] = None
 
     def refresh(self, portfolio, regime_state, hmm, signals: list):
+        """Refresh the dashboard if the configured interval has elapsed.
+
+        Appends new signals to the recent-signals history, updates the HMM training
+        date, and delegates rendering to _render. No-ops if called too soon.
+        """
         import time
         now = time.time()
         if now - self._last_refresh < self.refresh_secs:
@@ -51,6 +63,11 @@ class Dashboard:
             logger.warning(f"Dashboard render failed: {e}")
 
     def _render(self, portfolio, regime_state, hmm):
+        """Clear the terminal and print all dashboard panels using rich.
+
+        Renders six panels in order: REGIME, PORTFOLIO, POSITIONS, RECENT SIGNALS,
+        RISK STATUS, and SYSTEM. Requires the rich library to be installed.
+        """
         from rich.console import Console
         from rich.layout import Layout
         from rich.panel import Panel

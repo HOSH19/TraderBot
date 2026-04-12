@@ -22,14 +22,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class Signal:
+    """Trade signal produced by a strategy, carrying all order and sizing parameters."""
+
     symbol: str
-    direction: str                  # "LONG" or "FLAT"
+    direction: str
     confidence: float
     entry_price: float
     stop_loss: float
     take_profit: Optional[float]
-    position_size_pct: float        # 0.60 to 0.95
-    leverage: float                 # 1.0 or 1.25
+    position_size_pct: float
+    leverage: float
     regime_id: int
     regime_name: str
     regime_probability: float
@@ -40,6 +42,7 @@ class Signal:
 
 
 def _ema(series: pd.Series, span: int) -> pd.Series:
+    """Return the exponential moving average of series with the given span."""
     return series.ewm(span=span, adjust=False).mean()
 
 
@@ -63,9 +66,12 @@ def _compute_stop_and_params(
 
 
 class BaseStrategy(ABC):
+    """Abstract base class for all regime-driven allocation strategies."""
+
     name: str = "BaseStrategy"
 
     def __init__(self, config: dict):
+        """Initialize the strategy with configuration parameters."""
         self.config = config
 
     @abstractmethod
@@ -75,6 +81,7 @@ class BaseStrategy(ABC):
         bars: pd.DataFrame,
         regime_state: RegimeState,
     ) -> Optional[Signal]:
+        """Generate a trade signal for symbol given OHLCV bars and the current regime state."""
         pass
 
 
@@ -87,6 +94,7 @@ class LowVolBullStrategy(BaseStrategy):
     name = "LowVolBullStrategy"
 
     def generate_signal(self, symbol, bars, regime_state) -> Optional[Signal]:
+        """Generate a fully allocated long signal with 1.25x leverage in calm low-volatility conditions."""
         price, atr, ema50 = _compute_stop_and_params(bars, self.name)
         if atr == 0 or price == 0:
             return None
@@ -125,6 +133,7 @@ class MidVolCautiousStrategy(BaseStrategy):
     name = "MidVolCautiousStrategy"
 
     def generate_signal(self, symbol, bars, regime_state) -> Optional[Signal]:
+        """Generate a long signal sized by whether price is above or below the 50 EMA."""
         price, atr, ema50 = _compute_stop_and_params(bars, self.name)
         if atr == 0 or price == 0:
             return None
@@ -170,6 +179,7 @@ class HighVolDefensiveStrategy(BaseStrategy):
     name = "HighVolDefensiveStrategy"
 
     def generate_signal(self, symbol, bars, regime_state) -> Optional[Signal]:
+        """Generate a reduced-allocation long signal to stay positioned for V-shaped rebounds."""
         price, atr, ema50 = _compute_stop_and_params(bars, self.name)
         if atr == 0 or price == 0:
             return None
@@ -197,7 +207,6 @@ class HighVolDefensiveStrategy(BaseStrategy):
         )
 
 
-# Backward-compatible aliases
 CrashDefensiveStrategy = HighVolDefensiveStrategy
 BearTrendStrategy = HighVolDefensiveStrategy
 MeanReversionStrategy = MidVolCautiousStrategy
@@ -224,11 +233,13 @@ class StrategyOrchestrator:
     """
 
     def __init__(self, config: dict, regime_infos: List[RegimeInfo]):
+        """Initialize the orchestrator and build the initial regime-to-strategy mapping."""
         self.config = config
         self._strategy_map: Dict[int, BaseStrategy] = {}
         self._update_mapping(regime_infos)
 
     def _update_mapping(self, regime_infos: List[RegimeInfo]):
+        """Build the regime_id-to-strategy map by ranking regimes by expected volatility."""
         self._strategy_map = {}
         n = len(regime_infos)
         if n == 0:
@@ -261,6 +272,12 @@ class StrategyOrchestrator:
         is_flickering: bool,
         current_allocations: Optional[Dict[str, float]] = None,
     ) -> List[Signal]:
+        """
+        Generate signals for all symbols using the strategy mapped to the current regime.
+
+        Applies uncertainty scaling when confidence is low or the regime is flickering, and
+        skips signals that fall within rebalance_threshold of the current allocation.
+        """
         if regime_state.state_id not in self._strategy_map:
             logger.warning(f"No strategy for regime_id={regime_state.state_id}, returning empty signals.")
             return []

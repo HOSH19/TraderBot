@@ -19,7 +19,15 @@ LIVE_BASE_URL = "https://api.alpaca.markets"
 
 
 class AlpacaClient:
+    """Thin wrapper around the Alpaca SDK with paper/live mode switching and auto-reconnect."""
+
     def __init__(self, config: dict):
+        """
+        Initialize AlpacaClient and immediately establish a connection.
+
+        Args:
+            config: Application config dict with 'broker' and 'alpaca' sub-keys.
+        """
         self.cfg = config
         self.paper_trading = config.get("broker", {}).get("paper_trading", True)
         self._client = None
@@ -28,12 +36,12 @@ class AlpacaClient:
         self._connect()
 
     def _connect(self):
+        """Instantiate Alpaca trading and data clients using credentials from env or config."""
         from alpaca.trading.client import TradingClient
         from alpaca.data.historical import StockHistoricalDataClient
 
         api_key = os.getenv("ALPACA_API_KEY") or self.cfg.get("alpaca", {}).get("api_key")
         secret_key = os.getenv("ALPACA_SECRET_KEY") or self.cfg.get("alpaca", {}).get("secret_key")
-        # GitHub / .env pastes often include a trailing newline, which breaks HTTP headers.
         if api_key:
             api_key = str(api_key).strip()
         if secret_key:
@@ -63,6 +71,7 @@ class AlpacaClient:
         logger.info(f"Alpaca client connected ({'PAPER' if self.paper_trading else 'LIVE'})")
 
     def health_check(self) -> bool:
+        """Return True if the Alpaca account is active and reachable."""
         try:
             account = self._trading_client.get_account()
             return account.status == "ACTIVE"
@@ -71,6 +80,11 @@ class AlpacaClient:
             return False
 
     def reconnect(self, max_retries: int = 5):
+        """
+        Re-establish the Alpaca connection with exponential backoff.
+
+        Raises ConnectionError after max_retries unsuccessful attempts.
+        """
         for attempt in range(max_retries):
             try:
                 self._connect()
@@ -84,31 +98,44 @@ class AlpacaClient:
         raise ConnectionError("Failed to reconnect to Alpaca after max retries")
 
     def get_account(self):
+        """Return the Alpaca Account object with equity, cash, and status fields."""
         return self._trading_client.get_account()
 
     def get_positions(self):
+        """Return a list of all open positions from Alpaca."""
         return self._trading_client.get_all_positions()
 
     def get_order_history(self, limit: int = 50):
+        """
+        Return the most recent orders up to `limit`.
+
+        Args:
+            limit: Maximum number of orders to retrieve (default 50).
+        """
         from alpaca.trading.requests import GetOrdersRequest
         req = GetOrdersRequest(limit=limit)
         return self._trading_client.get_orders(filter=req)
 
     def is_market_open(self) -> bool:
+        """Return True if the US equity market is currently open."""
         clock = self._trading_client.get_clock()
         return clock.is_open
 
     def get_clock(self):
+        """Return the Alpaca market clock with open/close times and current status."""
         return self._trading_client.get_clock()
 
     def get_available_margin(self) -> float:
+        """Return available buying power in dollars."""
         account = self.get_account()
         return float(account.buying_power)
 
     @property
     def trading_client(self):
+        """Expose the underlying Alpaca TradingClient instance."""
         return self._trading_client
 
     @property
     def data_client(self):
+        """Expose the underlying Alpaca StockHistoricalDataClient instance."""
         return self._data_client

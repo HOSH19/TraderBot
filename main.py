@@ -35,18 +35,26 @@ LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 
 def load_config() -> dict:
+    """Load and return the YAML application config from config/settings.yaml."""
     cfg_path = os.path.join(BASE_DIR, "config", "settings.yaml")
     with open(cfg_path) as f:
         return yaml.safe_load(f)
 
 
 def setup_logging(config: dict):
+    """Initialize structured logging using settings from the application config."""
     os.makedirs(LOG_DIR, exist_ok=True)
     from monitoring.logger import setup_structured_logging
     setup_structured_logging(config)
 
 
 def load_or_train_hmm(config: dict, market_data, symbols: list):
+    """
+    Return a ready-to-use HMMEngine, loading from disk or training from scratch.
+
+    Loads the saved model if it exists and is fresh (≤7 days old). Otherwise
+    fetches ~3 years of bars for the primary symbol and trains a new model, saving it.
+    """
     from core.hmm_engine import HMMEngine
 
     hmm = HMMEngine(config.get("hmm", {}))
@@ -74,6 +82,7 @@ def load_or_train_hmm(config: dict, market_data, symbols: list):
 
 
 def save_state_snapshot(portfolio_state, regime_state):
+    """Persist current portfolio and regime state to state_snapshot.json."""
     try:
         snap = {
             "timestamp": datetime.utcnow().isoformat(),
@@ -90,6 +99,7 @@ def save_state_snapshot(portfolio_state, regime_state):
 
 
 def load_state_snapshot() -> dict:
+    """Load the persisted state snapshot from disk, returning empty dict if missing or corrupt."""
     if os.path.exists(STATE_SNAPSHOT_FILE):
         try:
             with open(STATE_SNAPSHOT_FILE) as f:
@@ -100,6 +110,7 @@ def load_state_snapshot() -> dict:
 
 
 def print_session_summary(portfolio_state, start_time: datetime):
+    """Print a summary of session duration, final equity, daily P&L, and circuit-breaker status."""
     elapsed = (datetime.utcnow() - start_time).total_seconds() / 3600
     print(f"\n{'='*50}")
     print(f"SESSION SUMMARY")
@@ -111,6 +122,17 @@ def print_session_summary(portfolio_state, start_time: datetime):
 
 
 def run_trading_loop(config: dict, dry_run: bool = False):
+    """
+    Run the live (or dry-run) trading loop, subscribing to real-time bar data.
+
+    Initializes all components, streams bars via Alpaca, processes regime signals on
+    each bar, manages circuit breakers, submits orders, and handles graceful shutdown
+    on SIGINT/SIGTERM. Blocks until shutdown is requested.
+
+    Args:
+        config: Full application config dict.
+        dry_run: If True, all order logic runs but no orders are actually submitted.
+    """
     logger = logging.getLogger(__name__)
     from broker.alpaca_client import AlpacaClient
     from broker.order_executor import OrderExecutor
@@ -168,6 +190,7 @@ def run_trading_loop(config: dict, dry_run: bool = False):
             bars_by_symbol[sym] = df
 
     def on_bar(bar):
+        """Process an incoming real-time bar: update history, detect regime, validate signals, and place orders."""
         nonlocal last_regime_state
         sym = bar.symbol if hasattr(bar, "symbol") else list(bars_by_symbol.keys())[0]
 
@@ -230,6 +253,7 @@ def run_trading_loop(config: dict, dry_run: bool = False):
         dashboard.refresh(portfolio, regime_state, hmm, signals)
 
     def handle_shutdown(signum, frame):
+        """Handle SIGINT/SIGTERM by stopping the stream, saving state, and exiting cleanly."""
         nonlocal shutdown_requested
         shutdown_requested = True
         logger.info("Shutdown signal received")
@@ -242,6 +266,7 @@ def run_trading_loop(config: dict, dry_run: bool = False):
     signal.signal(signal.SIGTERM, handle_shutdown)
 
     def weekly_retrain():
+        """Retrain the HMM model weekly and propagate updated regime info to downstream components."""
         nonlocal hmm, orchestrator
         logger.info("Weekly HMM retrain starting...")
         try:
@@ -270,6 +295,16 @@ def run_trading_loop(config: dict, dry_run: bool = False):
 
 
 def run_backtest(config: dict, args):
+    """
+    Fetch historical data, run the walk-forward backtester, and print results.
+
+    Optionally runs stress tests and benchmark comparisons based on CLI args.
+    Saves equity curve, trade log, and regime history CSVs to backtest_results/.
+
+    Args:
+        config: Full application config dict.
+        args: Parsed argparse namespace with symbols, start, end, stress_test, and compare flags.
+    """
     from broker.alpaca_client import AlpacaClient
     from backtest.backtester import WalkForwardBacktester
     from backtest.performance import print_report
@@ -331,6 +366,7 @@ def run_backtest(config: dict, args):
 
 
 def main():
+    """Parse CLI arguments and dispatch to the appropriate mode (backtest, train, dashboard, or live)."""
     parser = argparse.ArgumentParser(description="Regime Trader Bot")
     parser.add_argument("--dry-run", action="store_true", help="Full pipeline, no orders placed")
     parser.add_argument("--backtest", action="store_true", help="Run walk-forward backtester")

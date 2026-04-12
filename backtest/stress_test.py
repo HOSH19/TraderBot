@@ -16,6 +16,15 @@ logger = logging.getLogger(__name__)
 
 
 def _inject_crash_gaps(bars: pd.DataFrame, n_points: int, gap_range: tuple, seed: int) -> pd.DataFrame:
+    """
+    Apply random multiplicative price shocks to simulate crash gap events.
+
+    Args:
+        bars: OHLCV DataFrame to modify.
+        n_points: Number of bars to shock.
+        gap_range: (min_shock, max_shock) as fractional multipliers (e.g. -0.15 to -0.05).
+        seed: Random seed for reproducibility.
+    """
     bars = bars.copy()
     bars.columns = [c.lower() for c in bars.columns]
     rng = np.random.default_rng(seed)
@@ -28,6 +37,15 @@ def _inject_crash_gaps(bars: pd.DataFrame, n_points: int, gap_range: tuple, seed
 
 
 def _inject_overnight_gaps(bars: pd.DataFrame, n_points: int, atr_mult_range: tuple, seed: int) -> pd.DataFrame:
+    """
+    Apply random additive ATR-scaled gaps to simulate overnight price jumps.
+
+    Args:
+        bars: OHLCV DataFrame to modify.
+        n_points: Number of bars to gap.
+        atr_mult_range: (min_mult, max_mult) applied to the 14-period ATR.
+        seed: Random seed for reproducibility.
+    """
     bars = bars.copy()
     bars.columns = [c.lower() for c in bars.columns]
     close = bars["close"]
@@ -153,6 +171,14 @@ def run_regime_misclassification(
 
 
 def print_stress_report(crash: Dict, gap: Dict, misclass: Dict):
+    """
+    Print a formatted Rich table summarizing crash injection, gap risk, and misclassification results.
+
+    Args:
+        crash: Output dict from run_crash_injection.
+        gap: Output dict from run_gap_risk.
+        misclass: Output dict from run_regime_misclassification.
+    """
     from rich.console import Console
     from rich.table import Table
 

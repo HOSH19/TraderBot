@@ -35,17 +35,20 @@ LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 
 def load_config() -> dict:
+    """Load and return the YAML settings from config/settings.yaml."""
     with open(os.path.join(BASE_DIR, "config", "settings.yaml")) as f:
         return yaml.safe_load(f)
 
 
 def setup_logging(config: dict):
+    """Initialize structured logging using the application config."""
     os.makedirs(LOG_DIR, exist_ok=True)
     from monitoring.logger import setup_structured_logging
     setup_structured_logging(config)
 
 
 def _load_prev_snapshot() -> dict:
+    """Load the last persisted state snapshot from disk, returning empty dict on failure."""
     if os.path.exists(STATE_SNAPSHOT_FILE):
         try:
             with open(STATE_SNAPSHOT_FILE) as f:
@@ -56,6 +59,12 @@ def _load_prev_snapshot() -> dict:
 
 
 def _save_snapshot(portfolio, regime_state, prev_snapshot: dict):
+    """
+    Persist portfolio and regime state to disk as a JSON snapshot.
+
+    Carries forward the peak_equity, daily_start_equity, and weekly_start_equity
+    values from the previous snapshot when they are not yet reset.
+    """
     snapshot = {
         "timestamp": datetime.utcnow().isoformat(),
         "equity": portfolio.equity,
@@ -72,6 +81,11 @@ def _save_snapshot(portfolio, regime_state, prev_snapshot: dict):
 
 
 def _fetch_bars(market_data, symbols, timeframe, logger):
+    """
+    Fetch ~10 years of historical OHLCV bars for each symbol.
+
+    Returns a dict mapping symbol -> DataFrame. Symbols with no data are skipped.
+    """
     bars_by_symbol = {}
     for sym in symbols:
         df = market_data.get_historical_bars(
@@ -88,12 +102,17 @@ def _fetch_bars(market_data, symbols, timeframe, logger):
 
 
 def _load_or_train_hmm(config, primary_bars, market_open: bool, logger):
+    """
+    Load the saved HMM model or train a new one if absent or stale.
+
+    Retraining only occurs on market-open runs; weekend/closed runs reuse a stale
+    model for status-check purposes.
+    """
     from core.hmm_engine import HMMEngine
     hmm = HMMEngine(config.get("hmm", {}))
 
     if os.path.exists(HMM_MODEL_FILE):
         hmm.load(HMM_MODEL_FILE)
-        # Only retrain on weekday runs, not weekend status checks
         if hmm.is_stale(max_days=7) and market_open:
             logger.info("HMM stale — retraining (this takes ~2 mins)...")
             hmm.train(primary_bars)
@@ -124,6 +143,14 @@ def _stock_price_summary(bars_by_symbol: dict) -> list:
 
 
 def run():
+    """
+    Execute the daily trading pipeline.
+
+    When the market is open (or it's a weekday after-close run), runs the full pipeline:
+    regime detection, signal generation, risk checks, order placement, and Telegram briefing.
+    When the market is closed (weekend/holiday), sends a summary-only Telegram message with
+    regime and portfolio status and skips all order placement.
+    """
     config = load_config()
     setup_logging(config)
     logger = logging.getLogger(__name__)
@@ -151,7 +178,6 @@ def run():
         if not alpaca.health_check():
             raise ConnectionError("Alpaca health check failed")
 
-        # ── Determine market status ────────────────────────────────────────
         clock = alpaca.get_clock()
         market_open = clock.is_open
         next_open_str = clock.next_open.strftime("%a %b %d %H:%M ET") if clock.next_open else "unknown"
@@ -166,17 +192,14 @@ def run():
 
         market_data = MarketData(alpaca)
 
-        # ── Fetch data ─────────────────────────────────────────────────────
         bars_by_symbol = _fetch_bars(market_data, symbols, timeframe, logger)
         if not bars_by_symbol:
             raise RuntimeError("No market data fetched for any symbol")
 
         primary_bars = bars_by_symbol[symbols[0]]
 
-        # ── Load / train HMM ───────────────────────────────────────────────
         hmm = _load_or_train_hmm(config, primary_bars, market_open, logger)
 
-        # ── Detect regime ──────────────────────────────────────────────────
         regime_state = hmm.predict_regime_filtered(primary_bars)
         is_flickering = hmm.is_flickering()
         hmm_age_days = (datetime.utcnow() - hmm.training_date).days if hmm.training_date else 0
@@ -186,7 +209,6 @@ def run():
             f"stability={regime_state.consecutive_bars}bars flickering={is_flickering}"
         )
 
-        # ── Portfolio state ────────────────────────────────────────────────
         account = alpaca.get_account()
         equity = float(account.equity)
         prev_snapshot = _load_prev_snapshot()
@@ -209,17 +231,13 @@ def run():
             for sym, pos in portfolio.positions.items()
         ]
 
-        # ── Fetch news ─────────────────────────────────────────────────────
         logger.info("Fetching news headlines...")
         news = fetch_news_for_symbols(symbols)
 
-        # ══════════════════════════════════════════════════════════════════
-        # MARKET CLOSED — send summary only, no orders
-        # ══════════════════════════════════════════════════════════════════
         if not market_open:
             logger.info("Market closed — sending summary, skipping order placement")
             stock_prices = _stock_price_summary(bars_by_symbol)
-            telegram.send_market_summary(
+            sent = telegram.send_market_summary(
                 date=datetime.utcnow(),
                 market_status=market_status,
                 next_open=next_open_str,
@@ -235,12 +253,14 @@ def run():
                 hmm_age_days=hmm_age_days,
                 news=news,
             )
+            if telegram.enabled and not sent:
+                logger.error(
+                    "Telegram summary was not delivered. Check logs for 'Telegram send failed' — "
+                    "token/chat_id in GitHub secrets (same Environment as the workflow) or revoke/regenerate bot."
+                )
             logger.info("=== Market closed run complete ===")
             return
 
-        # ══════════════════════════════════════════════════════════════════
-        # MARKET OPEN / WEEKDAY AFTER CLOSE — full pipeline
-        # ══════════════════════════════════════════════════════════════════
         risk_manager = RiskManager(config)
         cb_action, cb_reason = risk_manager.circuit_breaker.check(portfolio)
         if cb_action in ("HALTED", "CLOSE_ALL_DAY", "CLOSE_ALL_WEEK"):
@@ -288,7 +308,7 @@ def run():
         daily_pnl = equity - (portfolio.daily_start_equity or equity)
         daily_pnl_pct = (daily_pnl / portfolio.daily_start_equity * 100) if portfolio.daily_start_equity else 0.0
 
-        telegram.send_daily_briefing(
+        sent = telegram.send_daily_briefing(
             date=datetime.utcnow(),
             regime_label=regime_state.label,
             regime_prob=regime_state.probability,
@@ -305,6 +325,11 @@ def run():
             paper_trading=paper_trading,
             news=news,
         )
+        if telegram.enabled and not sent:
+            logger.error(
+                "Telegram briefing was not delivered. Check logs for 'Telegram send failed' — "
+                "token/chat_id in GitHub secrets (same Environment as the workflow)."
+            )
 
         logger.info(f"=== Daily run complete. Orders placed: {len(orders_placed)} ===")
 

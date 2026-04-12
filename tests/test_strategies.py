@@ -13,6 +13,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 def _make_bars(n: int = 300) -> pd.DataFrame:
+    """Generate n bars of synthetic OHLCV price data starting at $400."""
     rng = np.random.default_rng(99)
     prices = [400.0]
     for _ in range(n - 1):
@@ -27,6 +28,7 @@ def _make_bars(n: int = 300) -> pd.DataFrame:
 
 
 def _load_config():
+    """Load the project settings.yaml config and return it as a dict."""
     import yaml
     cfg_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
     with open(cfg_path) as f:
@@ -34,6 +36,7 @@ def _load_config():
 
 
 def _make_regime_state(state_id: int = 0, label: str = "BULL", prob: float = 0.75):
+    """Build a confirmed RegimeState fixture with the given id, label, and probability."""
     from core.hmm_engine import RegimeState
     return RegimeState(
         label=label,
@@ -47,6 +50,7 @@ def _make_regime_state(state_id: int = 0, label: str = "BULL", prob: float = 0.7
 
 
 def _make_regime_info(regime_id: int, vol: float, strategy_type: str):
+    """Build a RegimeInfo fixture with the given id, expected volatility, and strategy type."""
     from core.hmm_engine import RegimeInfo
     return RegimeInfo(
         regime_id=regime_id,
@@ -61,7 +65,10 @@ def _make_regime_info(regime_id: int, vol: float, strategy_type: str):
 
 
 class TestStrategies:
+    """Unit tests for individual regime strategies and the StrategyOrchestrator."""
+
     def test_low_vol_bull_direction_long(self):
+        """LowVolBullStrategy must generate a LONG signal in a bull regime."""
         from core.regime_strategies import LowVolBullStrategy
         config = _load_config()
         strat = LowVolBullStrategy(config.get("strategy", {}))
@@ -70,6 +77,7 @@ class TestStrategies:
         assert signal.direction == "LONG"
 
     def test_low_vol_bull_leverage(self):
+        """LowVolBullStrategy must apply 1.25× leverage in a confirmed bull regime."""
         from core.regime_strategies import LowVolBullStrategy
         config = _load_config()
         strat = LowVolBullStrategy(config.get("strategy", {}))
@@ -77,6 +85,7 @@ class TestStrategies:
         assert signal.leverage == 1.25
 
     def test_high_vol_allocation_reduced(self):
+        """HighVolDefensiveStrategy must cap position size at 60% with 1.0× leverage in a crash regime."""
         from core.regime_strategies import HighVolDefensiveStrategy
         config = _load_config()
         strat = HighVolDefensiveStrategy(config.get("strategy", {}))
@@ -85,6 +94,7 @@ class TestStrategies:
         assert signal.leverage == 1.0
 
     def test_mid_vol_trend_intact(self):
+        """MidVolCautiousStrategy must still generate a signal when trend is intact in a neutral regime."""
         from core.regime_strategies import MidVolCautiousStrategy
         config = _load_config()
         strat = MidVolCautiousStrategy(config.get("strategy", {}))
@@ -94,6 +104,7 @@ class TestStrategies:
         assert signal is not None
 
     def test_stop_loss_below_entry(self):
+        """Every strategy's stop_loss must be strictly below its entry_price."""
         from core.regime_strategies import LowVolBullStrategy, MidVolCautiousStrategy, HighVolDefensiveStrategy
         config = _load_config()
         bars = _make_bars(300)
@@ -104,6 +115,7 @@ class TestStrategies:
                 assert sig.stop_loss < sig.entry_price, f"{StratCls.name} stop_loss >= entry_price"
 
     def test_uncertainty_mode_halves_size(self):
+        """When regime probability is below the confidence threshold the orchestrator must halve position sizes."""
         from core.regime_strategies import StrategyOrchestrator
         config = _load_config()
         infos = [
@@ -120,6 +132,7 @@ class TestStrategies:
             assert signals[0].position_size_pct <= 0.95 * 0.5 + 0.01
 
     def test_no_short_signals(self):
+        """Strategies must never emit a SHORT direction signal under any regime label."""
         from core.regime_strategies import LowVolBullStrategy, MidVolCautiousStrategy, HighVolDefensiveStrategy
         config = _load_config()
         bars = _make_bars(300)
@@ -131,6 +144,7 @@ class TestStrategies:
                     assert sig.direction in ("LONG", "FLAT"), f"Got SHORT signal from {StratCls.name}"
 
     def test_rebalance_threshold_prevents_churn(self):
+        """Orchestrator must suppress signals when current allocation is already near the target."""
         from core.regime_strategies import StrategyOrchestrator
         config = _load_config()
         infos = [_make_regime_info(0, 0.005, "LowVolBull")]

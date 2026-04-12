@@ -37,6 +37,7 @@ def _make_synthetic_bars(n: int = 700, seed: int = 42) -> pd.DataFrame:
 
 
 def _load_config():
+    """Load the project settings.yaml config and return it as a dict."""
     import yaml
     cfg_path = os.path.join(os.path.dirname(__file__), "..", "config", "settings.yaml")
     with open(cfg_path) as f:
@@ -44,7 +45,10 @@ def _load_config():
 
 
 class TestHMMEngine:
+    """Integration tests for HMMEngine: training, BIC selection, regime labeling, and persistence."""
+
     def test_train_selects_best_n(self):
+        """Verify that BIC selection chooses a number of regimes within the allowed range."""
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
@@ -54,6 +58,7 @@ class TestHMMEngine:
         assert hmm.bic_score < float("inf")
 
     def test_regime_labels_assigned(self):
+        """Ensure each trained regime receives a non-empty string label."""
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
@@ -64,6 +69,7 @@ class TestHMMEngine:
             assert isinstance(label, str) and len(label) > 0
 
     def test_regime_infos_built(self):
+        """Confirm RegimeInfo objects are built for each regime with valid leverage and position-size constraints."""
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
@@ -75,6 +81,7 @@ class TestHMMEngine:
             assert 0 < info.max_position_size_pct <= 1.0
 
     def test_predict_returns_regime_state(self):
+        """Verify predict_regime_filtered returns a valid RegimeState with probability in [0, 1]."""
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
@@ -86,6 +93,7 @@ class TestHMMEngine:
         assert state.label in hmm.labels
 
     def test_forward_probs_sum_to_one(self):
+        """Assert that the forward-algorithm probability vector sums to 1.0 within floating-point tolerance."""
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
@@ -95,6 +103,7 @@ class TestHMMEngine:
         assert abs(proba.sum() - 1.0) < 1e-6
 
     def test_save_and_load(self, tmp_path):
+        """Confirm that a trained model can be serialized and deserialized with identical regime count and labels."""
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
@@ -109,6 +118,7 @@ class TestHMMEngine:
         assert hmm2.labels == hmm.labels
 
     def test_stale_detection(self):
+        """Verify is_stale returns False for a freshly trained model and True after simulating an old training date."""
         from core.hmm_engine import HMMEngine
         from datetime import datetime, timedelta
         config = _load_config()
