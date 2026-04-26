@@ -12,6 +12,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.timeutil import utc_now
+
 
 def _make_signal(symbol="SPY", entry=400.0, stop=390.0):
     """Build a LONG Signal fixture with 20% allocation, 1.0× leverage, and the given entry/stop prices."""
@@ -21,7 +23,7 @@ def _make_signal(symbol="SPY", entry=400.0, stop=390.0):
         entry_price=entry, stop_loss=stop, take_profit=None,
         position_size_pct=0.20, leverage=1.0,
         regime_id=0, regime_name="BULL", regime_probability=0.75,
-        timestamp=datetime.utcnow(), reasoning="test", strategy_name="Test",
+        timestamp=utc_now(), reasoning="test", strategy_name="Test",
     )
 
 
@@ -114,7 +116,7 @@ class TestOrderExecutorDryRun:
             entry_price=400.0, stop_loss=390.0, take_profit=420.0,
             position_size_pct=0.20, leverage=1.0,
             regime_id=0, regime_name="BULL", regime_probability=0.75,
-            timestamp=datetime.utcnow(), reasoning="test", strategy_name="Test",
+            timestamp=utc_now(), reasoning="test", strategy_name="Test",
         )
         decision = _make_risk_decision(signal)
         order_id = executor.submit_bracket_order(signal, decision)

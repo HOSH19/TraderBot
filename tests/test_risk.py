@@ -12,6 +12,8 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.timeutil import utc_now
+
 
 def _load_config():
     """Load the project settings.yaml config and return it as a dict."""
@@ -44,7 +46,7 @@ def _make_signal(symbol="SPY", alloc=0.95, lev=1.0, entry=400.0, stop=390.0):
         entry_price=entry, stop_loss=stop, take_profit=None,
         position_size_pct=alloc, leverage=lev,
         regime_id=0, regime_name="BULL", regime_probability=0.75,
-        timestamp=datetime.utcnow(), reasoning="test", strategy_name="Test",
+        timestamp=utc_now(), reasoning="test", strategy_name="Test",
     )
 
 
@@ -136,7 +138,7 @@ class TestRiskManager:
         for i in range(5):
             sym = f"SYM{i}"
             portfolio.positions[sym] = Position(
-                symbol=sym, shares=10, entry_price=100, entry_time=datetime.utcnow(),
+                symbol=sym, shares=10, entry_price=100, entry_time=utc_now(),
                 current_price=100, stop_loss=90, regime_at_entry="BULL"
             )
         signal = _make_signal(symbol="NEW")

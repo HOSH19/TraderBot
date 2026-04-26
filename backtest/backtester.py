@@ -19,7 +19,6 @@ import pandas as pd
 
 from core.hmm_engine import HMMEngine
 from core.regime_strategies import StrategyOrchestrator
-from data.feature_engineering import get_feature_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +36,55 @@ class Trade:
     regime: str
     regime_prob: float
     slippage_cost: float
+
+
+def _delayed_rebalance_trade(
+    *,
+    symbol: str,
+    bars: pd.DataFrame,
+    global_idx: int,
+    fill_delay: int,
+    total_bars: int,
+    equity: float,
+    cash: float,
+    shares: float,
+    prev_allocation: float,
+    target_allocation: float,
+    slippage_pct: float,
+    regime_state,
+) -> Tuple[float, float, float, Optional[Trade]]:
+    """
+    Apply allocation change with fill_delay using next bar's open + slippage.
+
+    Returns (cash, shares, allocation_after, trade_or_none). Allocation unchanged if no fill.
+    """
+    fill_idx = global_idx + fill_delay
+    if fill_idx >= total_bars:
+        return cash, shares, prev_allocation, None
+
+    fill_price = float(bars.iloc[fill_idx]["open"])
+    slip = fill_price * slippage_pct
+    fill_price += slip
+
+    target_shares = int(equity * target_allocation / fill_price)
+    delta = target_shares - shares
+    cost = delta * fill_price
+    slippage_cost = abs(delta) * slippage
+
+    new_cash = cash - cost
+    new_shares = float(target_shares)
+    trade = Trade(
+        bar_index=fill_idx,
+        timestamp=bars.index[fill_idx],
+        symbol=symbol,
+        prev_allocation=prev_allocation,
+        new_allocation=target_allocation,
+        price=fill_price,
+        regime=regime_state.label,
+        regime_prob=regime_state.probability,
+        slippage_cost=slippage_cost,
+    )
+    return new_cash, new_shares, target_allocation, trade
 
 
 @dataclass
@@ -67,7 +115,6 @@ class WalkForwardBacktester:
         self,
         symbol: str,
         bars: pd.DataFrame,
-        verbose: bool = True,
     ) -> BacktestResult:
         """
         Run walk-forward backtest on a single symbol.
@@ -167,44 +214,24 @@ class WalkForwardBacktester:
                 if abs(target_allocation - current_allocation) < rebalance_threshold:
                     continue
 
-                fill_idx = global_idx + fill_delay
-                if fill_idx >= total_bars:
-                    continue
-
-                fill_price = float(bars.iloc[fill_idx]["open"])
-                slippage = fill_price * slippage_pct
-                fill_price += slippage
-
-                target_shares = int(equity * target_allocation / fill_price)
-                delta = target_shares - shares
-                cost = delta * fill_price
-                slippage_cost = abs(delta) * slippage
-
-                cash -= cost
-                shares = target_shares
-
-                trade_log.append(Trade(
-                    bar_index=fill_idx,
-                    timestamp=bars.index[fill_idx],
+                ncash, nshares, nalloc, trade = _delayed_rebalance_trade(
                     symbol=symbol,
+                    bars=bars,
+                    global_idx=global_idx,
+                    fill_delay=fill_delay,
+                    total_bars=total_bars,
+                    equity=equity,
+                    cash=cash,
+                    shares=shares,
                     prev_allocation=current_allocation,
-                    new_allocation=target_allocation,
-                    price=fill_price,
-                    regime=regime_state.label,
-                    regime_prob=regime_state.probability,
-                    slippage_cost=slippage_cost,
-                ))
-                current_allocation = target_allocation
-                window_trades += 1
-
-            if verbose:
-                oos_eq = all_equity.iloc[oos_start: oos_end].dropna()
-                if len(oos_eq) > 1:
-                    oos_ret = (oos_eq.iloc[-1] / oos_eq.iloc[0] - 1) * 100
-                    logger.info(
-                        f"Window {bars.index[oos_start].date()} → {bars.index[oos_end-1].date()}: "
-                        f"OOS return={oos_ret:.2f}%  trades={window_trades}"
-                    )
+                    target_allocation=target_allocation,
+                    slippage_pct=slippage_pct,
+                    regime_state=regime_state,
+                )
+                if trade is not None:
+                    cash, shares, current_allocation = ncash, nshares, nalloc
+                    trade_log.append(trade)
+                    window_trades += 1
 
             windows.append({
                 "is_start": bars.index[is_end - train_window],

@@ -2,9 +2,8 @@
 Stress testing: crash injection, gap risk, regime misclassification.
 """
 
-import logging
 import random
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -12,7 +11,13 @@ import pandas as pd
 from backtest.backtester import WalkForwardBacktester, BacktestResult
 from backtest.performance import compute_metrics
 
-logger = logging.getLogger(__name__)
+
+def _primary_symbol(config: dict, override: Optional[str] = None) -> str:
+    """Ticker string for backtester runs (must match orchestrator symbol list)."""
+    if override:
+        return override
+    syms = config.get("broker", {}).get("symbols") or ["SPY"]
+    return syms[0]
 
 
 def _inject_crash_gaps(bars: pd.DataFrame, n_points: int, gap_range: tuple, seed: int) -> pd.DataFrame:
@@ -64,11 +69,13 @@ def _inject_overnight_gaps(bars: pd.DataFrame, n_points: int, atr_mult_range: tu
 def run_crash_injection(
     bars: pd.DataFrame,
     config: dict,
+    symbol: Optional[str] = None,
     n_simulations: int = 100,
     n_crash_points: int = 10,
     gap_range: tuple = (-0.15, -0.05),
 ) -> Dict:
     """Insert -5% to -15% single-day gaps at random points. 100 Monte Carlo runs."""
+    sym = _primary_symbol(config, symbol)
     backtester = WalkForwardBacktester(config)
     max_losses = []
     cb_fired_count = 0
@@ -76,13 +83,13 @@ def run_crash_injection(
     for seed in range(n_simulations):
         shocked = _inject_crash_gaps(bars, n_crash_points, gap_range, seed)
         try:
-            result = backtester.run(shocked.columns[0] if hasattr(shocked, 'columns') else "SIM", shocked, verbose=False)
+            result = backtester.run(sym, shocked)
             metrics = compute_metrics(result)
             max_losses.append(metrics["max_drawdown_pct"])
             if metrics["max_drawdown_pct"] < -10:
                 cb_fired_count += 1
-        except Exception as e:
-            logger.debug(f"Crash sim {seed} failed: {e}")
+        except Exception:
+            pass
 
     arr = np.array(max_losses)
     return {
@@ -96,22 +103,24 @@ def run_crash_injection(
 def run_gap_risk(
     bars: pd.DataFrame,
     config: dict,
+    symbol: Optional[str] = None,
     n_simulations: int = 50,
     n_gap_points: int = 20,
     atr_mult_range: tuple = (2.0, 5.0),
 ) -> Dict:
     """Insert overnight gaps of 2–5x ATR. Compare expected vs actual loss."""
+    sym = _primary_symbol(config, symbol)
     backtester = WalkForwardBacktester(config)
     actual_losses = []
 
     for seed in range(n_simulations):
         gapped = _inject_overnight_gaps(bars, n_gap_points, atr_mult_range, seed)
         try:
-            result = backtester.run("SIM", gapped, verbose=False)
+            result = backtester.run(sym, gapped)
             metrics = compute_metrics(result)
             actual_losses.append(metrics["max_drawdown_pct"])
-        except Exception as e:
-            logger.debug(f"Gap sim {seed} failed: {e}")
+        except Exception:
+            pass
 
     arr = np.array(actual_losses)
     return {
@@ -125,20 +134,20 @@ def run_gap_risk(
 def run_regime_misclassification(
     bars: pd.DataFrame,
     config: dict,
+    symbol: Optional[str] = None,
     n_simulations: int = 30,
 ) -> Dict:
     """
     Shuffle regime labels to simulate complete HMM misclassification.
     If system blows up → risk management isn't independent enough.
     """
-    from backtest.backtester import WalkForwardBacktester
-
+    sym = _primary_symbol(config, symbol)
     backtester = WalkForwardBacktester(config)
     results_normal = []
     results_shuffled = []
 
     try:
-        normal = backtester.run("SIM", bars, verbose=False)
+        normal = backtester.run(sym, bars)
         results_normal.append(compute_metrics(normal)["max_drawdown_pct"])
     except Exception:
         pass
@@ -153,7 +162,7 @@ def run_regime_misclassification(
         shuffled_bars["low"] = shuffled_bars["close"] * rng.uniform(0.98, 1.0, len(shuffled_bars))
 
         try:
-            result = backtester.run("SIM", shuffled_bars, verbose=False)
+            result = backtester.run(sym, shuffled_bars)
             results_shuffled.append(compute_metrics(result)["max_drawdown_pct"])
         except Exception:
             pass

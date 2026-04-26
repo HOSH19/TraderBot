@@ -5,10 +5,10 @@ Updates PortfolioState and CircuitBreaker on every fill via WebSocket.
 
 import logging
 import threading
-from datetime import datetime
 from typing import Dict, Optional
 
 from core.risk_manager import PortfolioState, Position
+from core.timeutil import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -52,15 +52,11 @@ class PositionTracker:
                         symbol=pos.symbol,
                         shares=float(pos.qty),
                         entry_price=float(pos.avg_entry_price),
-                        entry_time=datetime.utcnow(),
+                        entry_time=utc_now(),
                         current_price=float(pos.current_price),
                         stop_loss=0.0,
                         regime_at_entry="UNKNOWN",
                     )
-            logger.info(
-                f"Portfolio synced: equity=${self.portfolio.equity:,.2f} "
-                f"positions={list(self.portfolio.positions.keys())}"
-            )
         except Exception as e:
             logger.error(f"sync_from_alpaca failed: {e}")
 
@@ -69,10 +65,10 @@ class PositionTracker:
         with self._lock:
             if symbol in self.portfolio.positions:
                 self.portfolio.positions[symbol].current_price = price
-            self.portfolio.last_updated = datetime.utcnow()
+                self.portfolio.last_updated = utc_now()
 
     def on_fill(self, symbol: str, qty: float, price: float, side: str, trade_id: str, regime: str = ""):
-        """Called when a fill notification is received."""
+        """Merge a BUY/SELL fill into ``portfolio.positions`` and refresh account equity from Alpaca."""
         with self._lock:
             if side.upper() == "BUY":
                 if symbol in self.portfolio.positions:
@@ -85,7 +81,7 @@ class PositionTracker:
                         symbol=symbol,
                         shares=qty,
                         entry_price=price,
-                        entry_time=datetime.utcnow(),
+                        entry_time=utc_now(),
                         current_price=price,
                         stop_loss=0.0,
                         regime_at_entry=regime,
@@ -99,7 +95,6 @@ class PositionTracker:
                         del self.portfolio.positions[symbol]
 
         self._refresh_equity()
-        logger.info(f"Fill: {side} {qty} {symbol} @ ${price:.2f} trade_id={trade_id}")
 
     def update_stop(self, symbol: str, new_stop: float):
         """Update the stop-loss price for the given symbol's tracked position."""

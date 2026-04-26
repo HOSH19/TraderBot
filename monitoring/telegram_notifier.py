@@ -23,6 +23,18 @@ logger = logging.getLogger(__name__)
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
 
+def _strip_redundant_source_from_title(title: str, source: str) -> str:
+    """Remove a trailing ' — Source' suffix from the headline if present (APIs often duplicate source)."""
+    title = (title or "").strip()
+    src = (source or "").strip()
+    if not src:
+        return title
+    for suffix in (f" — {src}", f" - {src}"):
+        if title.endswith(suffix):
+            return title[: -len(suffix)].rstrip()
+    return title
+
+
 def _format_news_section(news: dict) -> list:
     """Format news dict {symbol: article|None} into Telegram message lines."""
     articles = [(sym, a) for sym, a in news.items() if a]
@@ -33,7 +45,7 @@ def _format_news_section(news: dict) -> list:
     for sym, a in articles:
         time_tag = f"  <i>{a['time_ago']}</i>" if a.get("time_ago") else ""
         source_tag = f" — {a['source']}" if a.get("source") else ""
-        title = a.get("title", "").rstrip(" - " + a.get("source", ""))
+        title = _strip_redundant_source_from_title(a.get("title", ""), a.get("source", ""))
         url = a.get("url", "")
         if url:
             lines.append(f'• <b>{sym}</b>: <a href="{url}">{title}</a>{source_tag}{time_tag}')
@@ -52,8 +64,6 @@ class TelegramNotifier:
         self.token = token.strip()
         self.chat_id = str(chat_id).strip()
         self.enabled = bool(self.token and self.chat_id)
-        if not self.enabled:
-            logger.info("Telegram not configured — set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
 
     def send(self, message: str) -> bool:
         """Send an HTML-formatted message to the configured Telegram chat.
@@ -61,7 +71,6 @@ class TelegramNotifier:
         Returns True on success, False if disabled or on any delivery failure.
         """
         if not self.enabled:
-            logger.info(f"[TELEGRAM DISABLED] {message}")
             return False
         try:
             resp = requests.post(
@@ -91,7 +100,6 @@ class TelegramNotifier:
         equity: float,
         daily_pnl: float,
         daily_pnl_pct: float,
-        peak_dd_pct: float,
         circuit_breaker: str,
         signals: List[dict],
         orders_placed: List[dict],
@@ -114,7 +122,6 @@ class TelegramNotifier:
         }.get(regime_label, "❓")
 
         cb_emoji = "✅" if circuit_breaker == "NORMAL" else "⚠️"
-        dd_emoji = "✅" if peak_dd_pct > -5 else ("⚠️" if peak_dd_pct > -8 else "🚨")
         pnl_emoji = "📈" if daily_pnl >= 0 else "📉"
         flicker_tag = " ⚡ FLICKERING" if is_flickering else ""
 
@@ -129,7 +136,6 @@ class TelegramNotifier:
             f"<b>💼 PORTFOLIO</b>",
             f"Equity: <b>${equity:,.2f}</b>",
             f"{pnl_emoji} Daily P&L: <b>{daily_pnl:+,.2f} ({daily_pnl_pct:+.2f}%)</b>",
-            f"From Peak: {peak_dd_pct:.1f}%  {dd_emoji}",
             f"Circuit Breaker: {circuit_breaker} {cb_emoji}",
         ]
 
@@ -138,7 +144,7 @@ class TelegramNotifier:
             for s in signals:
                 lines.append(
                     f"• {s['symbol']}: {s['direction']} {s['alloc_pct']:.0f}% "
-                    f"@ ${s['entry']:.2f}  stop ${s['stop']:.2f}"
+                    f"@ ${s['entry']:.2f}"
                 )
         else:
             lines += ["", "🎯 <b>No signals today</b> (no rebalance needed)"]
@@ -156,7 +162,7 @@ class TelegramNotifier:
                 pnl_sign = "+" if p['pnl_pct'] >= 0 else ""
                 lines.append(
                     f"• {p['symbol']}: {p['shares']} shares  "
-                    f"{pnl_sign}{p['pnl_pct']:.1f}%  stop ${p['stop']:.2f}"
+                    f"{pnl_sign}{p['pnl_pct']:.1f}%"
                 )
 
         if news:
@@ -182,11 +188,11 @@ class TelegramNotifier:
         regime_stability: int,
         is_flickering: bool,
         equity: float,
-        peak_dd_pct: float,
         positions: List[dict],
         stock_prices: List[dict],
         paper_trading: bool,
         hmm_age_days: int = 0,
+        hmm_stale_max_days: int = 3,
         news: Optional[dict] = None,
     ) -> bool:
         """Send a market-closed summary with regime state, portfolio snapshot, and price data.
@@ -201,19 +207,37 @@ class TelegramNotifier:
         }.get(regime_label, "❓")
 
         flicker_tag = " ⚡ FLICKERING" if is_flickering else ""
-        stale_tag = f"  ⚠️ model {hmm_age_days}d old" if hmm_age_days > 7 else ""
+        stale_tag = (
+            f"  ⚠️ model {hmm_age_days}d old"
+            if hmm_age_days > hmm_stale_max_days
+            else ""
+        )
+        if market_status == "Weekend":
+            market_line = (
+                f"🌙 <b>Weekend</b> — US session closed  ·  "
+                f"<i>Next open:</i> {next_open}"
+            )
+        elif market_status == "Post-close":
+            market_line = (
+                f"🌆 <b>Post-close</b> — regular session ended  ·  "
+                f"<i>Next open:</i> {next_open}"
+            )
+        else:
+            market_line = (
+                f"📊 <b>{market_status}</b>  ·  <i>Next open:</i> {next_open}"
+            )
 
         lines = [
             f"<b>🤖 REGIME TRADER MARKET SUMMARY</b>",
             f"<b>📅 {date.strftime('%A, %b %d %Y')}</b>  |  {mode_tag}",
-            f"🔴 Market: <b>{market_status}</b>  |  Next open: {next_open}",
+            market_line,
             "",
             f"<b>📊 REGIME (last close){stale_tag}</b>",
             f"{regime_emoji} <b>{regime_label}</b> ({regime_prob*100:.0f}% confidence){flicker_tag}",
             f"Stability: {regime_stability} bars",
             "",
             f"<b>💼 PORTFOLIO</b>",
-            f"Equity: <b>${equity:,.2f}</b>  |  From Peak: {peak_dd_pct:.1f}%",
+            f"Equity: <b>${equity:,.2f}</b>",
         ]
 
         if positions:
@@ -224,7 +248,7 @@ class TelegramNotifier:
                 pnl_sign = "+" if p["pnl_pct"] >= 0 else ""
                 lines.append(
                     f"• {p['symbol']}: {p['shares']} shares  "
-                    f"{pnl_emoji} {pnl_sign}{p['pnl_pct']:.1f}%  stop ${p['stop']:.2f}"
+                    f"{pnl_emoji} {pnl_sign}{p['pnl_pct']:.1f}%"
                 )
         else:
             lines += ["", "📦 No open positions"]
@@ -244,7 +268,6 @@ class TelegramNotifier:
             if news_lines:
                 lines += news_lines
 
-        lines += ["", f"<i>No orders placed — market closed</i>"]
         return self.send("\n".join(lines))
 
     def send_alert(self, event: str, detail: str) -> bool:

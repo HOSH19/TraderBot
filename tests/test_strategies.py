@@ -11,6 +11,8 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.timeutil import utc_now
+
 
 def _make_bars(n: int = 300) -> pd.DataFrame:
     """Generate n bars of synthetic OHLCV price data starting at $400."""
@@ -43,7 +45,7 @@ def _make_regime_state(state_id: int = 0, label: str = "BULL", prob: float = 0.7
         state_id=state_id,
         probability=prob,
         state_probabilities=np.array([prob, 1 - prob]),
-        timestamp=datetime.utcnow(),
+        timestamp=utc_now(),
         is_confirmed=True,
         consecutive_bars=5,
     )

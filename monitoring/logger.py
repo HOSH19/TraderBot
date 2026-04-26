@@ -8,7 +8,8 @@ import json
 import logging
 import logging.handlers
 import os
-from datetime import datetime
+
+from core.timeutil import utc_now
 
 
 class StructuredFormatter(logging.Formatter):
@@ -22,7 +23,7 @@ class StructuredFormatter(logging.Formatter):
         daily_pnl) when present on the record, plus exception info if applicable.
         """
         doc = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
             "level": record.levelname,
             "logger": record.name,
             "message": record.getMessage(),

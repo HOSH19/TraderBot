@@ -4,6 +4,7 @@ broker:
   timeframe: 1Day
 
 hmm:
+  stale_max_days: 3         # retrain saved model when older than this (see HMMEngine.is_stale)
   n_candidates: [3, 4, 5, 6, 7]
   n_init: 10
   covariance_type: full

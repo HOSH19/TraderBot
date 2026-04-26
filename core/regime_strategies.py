@@ -9,6 +9,8 @@ import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from datetime import datetime
+
+from core.timeutil import utc_now
 from typing import List, Optional, Dict, Any
 
 import numpy as np
@@ -65,6 +67,12 @@ def _compute_stop_and_params(
     return current_price, atr, ema50_val
 
 
+def _cap_long_stop_below_entry(entry: float, stop: float, atr: float) -> float:
+    """Clamp raw stop so a LONG bracket is strictly below entry (EMA-based rules can sit above spot)."""
+    cushion = max(0.01 * atr, entry * 1e-6, 1e-4)
+    return min(stop, entry - cushion)
+
+
 class BaseStrategy(ABC):
     """Abstract base class for all regime-driven allocation strategies."""
 
@@ -100,6 +108,7 @@ class LowVolBullStrategy(BaseStrategy):
             return None
 
         stop = max(price - 3 * atr, ema50 - 0.5 * atr)
+        stop = _cap_long_stop_below_entry(price, stop, atr)
         alloc = self.config.get("low_vol_allocation", 0.95)
         leverage = self.config.get("low_vol_leverage", 1.25)
 
@@ -115,7 +124,7 @@ class LowVolBullStrategy(BaseStrategy):
             regime_id=regime_state.state_id,
             regime_name=regime_state.label,
             regime_probability=regime_state.probability,
-            timestamp=datetime.utcnow(),
+            timestamp=utc_now(),
             reasoning=f"Low-vol regime ({regime_state.label}, p={regime_state.probability:.2f}). "
                       f"Calm market — full allocation with modest leverage.",
             strategy_name=self.name,
@@ -138,7 +147,7 @@ class MidVolCautiousStrategy(BaseStrategy):
         if atr == 0 or price == 0:
             return None
 
-        stop = ema50 - 0.5 * atr
+        stop = _cap_long_stop_below_entry(price, ema50 - 0.5 * atr, atr)
         trend_intact = price > ema50
 
         if trend_intact:
@@ -162,7 +171,7 @@ class MidVolCautiousStrategy(BaseStrategy):
             regime_id=regime_state.state_id,
             regime_name=regime_state.label,
             regime_probability=regime_state.probability,
-            timestamp=datetime.utcnow(),
+            timestamp=utc_now(),
             reasoning=f"Mid-vol regime ({regime_state.label}, p={regime_state.probability:.2f}). {reason_suffix}",
             strategy_name=self.name,
             metadata={"atr": atr, "ema50": ema50, "trend_intact": trend_intact},
@@ -184,7 +193,7 @@ class HighVolDefensiveStrategy(BaseStrategy):
         if atr == 0 or price == 0:
             return None
 
-        stop = ema50 - 1.0 * atr
+        stop = _cap_long_stop_below_entry(price, ema50 - 1.0 * atr, atr)
         alloc = self.config.get("high_vol_allocation", 0.60)
 
         return Signal(
@@ -199,7 +208,7 @@ class HighVolDefensiveStrategy(BaseStrategy):
             regime_id=regime_state.state_id,
             regime_name=regime_state.label,
             regime_probability=regime_state.probability,
-            timestamp=datetime.utcnow(),
+            timestamp=utc_now(),
             reasoning=f"High-vol regime ({regime_state.label}, p={regime_state.probability:.2f}). "
                       f"Reduced allocation — staying 60% long to catch rebounds.",
             strategy_name=self.name,
@@ -255,10 +264,6 @@ class StrategyOrchestrator:
             else:
                 strategy_cls = MidVolCautiousStrategy
             self._strategy_map[info.regime_id] = strategy_cls(self.config)
-            logger.debug(
-                f"Regime {info.regime_name} (id={info.regime_id}, vol_rank={position:.2f}) "
-                f"→ {strategy_cls.name}"
-            )
 
     def update_regime_infos(self, regime_infos: List[RegimeInfo]):
         """Rebuild strategy mapping after HMM retrain."""

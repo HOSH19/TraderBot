@@ -16,7 +16,8 @@ from typing import List, Optional, Dict, Tuple
 import numpy as np
 from hmmlearn import hmm
 
-from data.feature_engineering import compute_features, get_feature_matrix
+from core.timeutil import ensure_utc, utc_now
+from data.feature_engineering import get_feature_matrix
 
 logger = logging.getLogger(__name__)
 
@@ -90,30 +91,43 @@ class HMMEngine:
         n_init = self.config.get("n_init", 10)
         cov_type = self.config.get("covariance_type", "full")
 
+        best_bic, best_model, best_n, bic_scores = self._select_by_bic(
+            feature_matrix, candidates, n_init, cov_type
+        )
+        logger.info("HMM trained: n_regimes=%s BIC=%.2f", best_n, best_bic)
+
+        self.model = best_model
+        self.n_regimes = best_n
+        self.bic_score = best_bic
+        self.training_date = utc_now()
+        self._cached_alpha = None
+
+        self._build_regime_infos(feature_matrix)
+        return self
+
+    def _select_by_bic(
+        self,
+        feature_matrix: np.ndarray,
+        candidates: List[int],
+        n_init: int,
+        cov_type: str,
+    ) -> Tuple[float, hmm.GaussianHMM, int, Dict[int, float]]:
+        """Fit each candidate n_components; return the best BIC model and all scores."""
         best_bic = float("inf")
         best_model = None
-        best_n = None
+        best_n: Optional[int] = None
         bic_scores: Dict[int, float] = {}
 
         for n in candidates:
             bic, model = self._fit_with_bic(feature_matrix, n, n_init, cov_type)
             bic_scores[n] = bic
-            logger.info(f"HMM n_components={n}  BIC={bic:.2f}")
             if bic < best_bic:
                 best_bic = bic
                 best_model = model
                 best_n = n
 
-        logger.info(f"Selected n_components={best_n} (BIC={best_bic:.2f})  Scores: {bic_scores}")
-
-        self.model = best_model
-        self.n_regimes = best_n
-        self.bic_score = best_bic
-        self.training_date = datetime.utcnow()
-        self._cached_alpha = None
-
-        self._build_regime_infos(feature_matrix)
-        return self
+        assert best_model is not None and best_n is not None
+        return best_bic, best_model, best_n, bic_scores
 
     def _fit_with_bic(
         self, X: np.ndarray, n: int, n_init: int, cov_type: str
@@ -151,8 +165,32 @@ class HMMEngine:
     def _build_regime_infos(self, feature_matrix: np.ndarray):
         """Label regimes by mean return (ascending) and compute vol-based metadata."""
         hidden_seq = self.model.predict(feature_matrix)
-        mean_returns = []
-        mean_vols = []
+        mean_returns, mean_vols = self._state_mean_returns_vols(feature_matrix, hidden_seq)
+        self._assign_return_ordered_labels(mean_returns)
+        vol_rank_frac = self._vol_rank_fractions(mean_vols)
+        min_conf = self.config.get("min_confidence", 0.55)
+
+        self.regime_infos = []
+        for i in range(self.n_regimes):
+            stype, max_lev, max_pos = self._strategy_params_for_vol_rank(float(vol_rank_frac[i]))
+            self.regime_infos.append(RegimeInfo(
+                regime_id=i,
+                regime_name=self.labels[i],
+                expected_return=mean_returns[i],
+                expected_volatility=mean_vols[i],
+                recommended_strategy_type=stype,
+                max_leverage_allowed=max_lev,
+                max_position_size_pct=max_pos,
+                min_confidence_to_act=min_conf,
+            ))
+
+    def _state_mean_returns_vols(
+        self, feature_matrix: np.ndarray, hidden_seq: np.ndarray
+    ) -> Tuple[List[float], List[float]]:
+        """Per-state mean return (col 0) and mean |vol| (col 3) from Viterbi assignment."""
+        mean_returns: List[float] = []
+        mean_vols: List[float] = []
+        ret_col, vol_col = 0, 3
 
         for i in range(self.n_regimes):
             mask = hidden_seq == i
@@ -160,51 +198,36 @@ class HMMEngine:
                 mean_returns.append(0.0)
                 mean_vols.append(1.0)
                 continue
-            ret_col = 0
-            vol_col = 3
-            mean_returns.append(feature_matrix[mask, ret_col].mean())
-            mean_vols.append(np.abs(feature_matrix[mask, vol_col]).mean())
+            mean_returns.append(float(feature_matrix[mask, ret_col].mean()))
+            mean_vols.append(float(np.abs(feature_matrix[mask, vol_col]).mean()))
 
+        return mean_returns, mean_vols
+
+    def _assign_return_ordered_labels(self, mean_returns: List[float]) -> None:
+        """Map raw state ids to human labels by sorting states on expected return (low → high)."""
         sorted_by_return = np.argsort(mean_returns)
         labels_for_n = REGIME_LABELS[self.n_regimes]
         self.labels = [""] * self.n_regimes
-
         for rank, regime_id in enumerate(sorted_by_return):
-            self.labels[regime_id] = labels_for_n[rank]
+            self.labels[int(regime_id)] = labels_for_n[rank]
 
+    def _vol_rank_fractions(self, mean_vols: List[float]) -> np.ndarray:
+        """Fractional rank of each state's volatility among all states (0 = calmest)."""
         sorted_by_vol = np.argsort(mean_vols)
         vol_ranks = np.empty(self.n_regimes)
+        denom = max(self.n_regimes - 1, 1)
         for rank, regime_id in enumerate(sorted_by_vol):
-            vol_ranks[regime_id] = rank / max(self.n_regimes - 1, 1)
+            vol_ranks[int(regime_id)] = rank / denom
+        return vol_ranks
 
-        self.regime_infos = []
-        for i in range(self.n_regimes):
-            vr = vol_ranks[i]
-            if vr <= 0.33:
-                strategy_type = "LowVolBull"
-                max_lev = 1.25
-                max_pos = 0.95
-            elif vr >= 0.67:
-                strategy_type = "HighVolDefensive"
-                max_lev = 1.0
-                max_pos = 0.60
-            else:
-                strategy_type = "MidVolCautious"
-                max_lev = 1.0
-                max_pos = 0.95
-
-            self.regime_infos.append(RegimeInfo(
-                regime_id=i,
-                regime_name=self.labels[i],
-                expected_return=mean_returns[i],
-                expected_volatility=mean_vols[i],
-                recommended_strategy_type=strategy_type,
-                max_leverage_allowed=max_lev,
-                max_position_size_pct=max_pos,
-                min_confidence_to_act=self.config.get("min_confidence", 0.55),
-            ))
-
-        logger.info(f"Regime infos built: {[(r.regime_name, r.recommended_strategy_type) for r in self.regime_infos]}")
+    @staticmethod
+    def _strategy_params_for_vol_rank(vol_rank_frac: float) -> Tuple[str, float, float]:
+        """Strategy template and risk caps from normalized volatility rank in [0, 1]."""
+        if vol_rank_frac <= 0.33:
+            return "LowVolBull", 1.25, 0.95
+        if vol_rank_frac >= 0.67:
+            return "HighVolDefensive", 1.0, 0.60
+        return "MidVolCautious", 1.0, 0.95
 
     def predict_regime_filtered(self, bars) -> RegimeState:
         """
@@ -285,6 +308,26 @@ class HMMEngine:
         total = alpha.sum()
         return alpha / (total + 1e-300) if total > 0 else np.ones_like(alpha) / len(alpha)
 
+    def _regime_state(
+        self,
+        state_id: int,
+        probability: float,
+        state_probs: np.ndarray,
+        *,
+        is_confirmed: bool,
+        consecutive_bars: int,
+    ) -> RegimeState:
+        """Build a RegimeState for the given HMM state id and filter bookkeeping."""
+        return RegimeState(
+            label=self.labels[state_id],
+            state_id=state_id,
+            probability=probability,
+            state_probabilities=state_probs,
+            timestamp=utc_now(),
+            is_confirmed=is_confirmed,
+            consecutive_bars=consecutive_bars,
+        )
+
     def _apply_stability_filter(
         self, raw_state_id: int, probability: float, state_probs: np.ndarray
     ) -> RegimeState:
@@ -293,14 +336,9 @@ class HMMEngine:
         confirmed = False
 
         if self._current_state is None:
-            self._current_state = RegimeState(
-                label=self.labels[raw_state_id],
-                state_id=raw_state_id,
-                probability=probability,
-                state_probabilities=state_probs,
-                timestamp=datetime.utcnow(),
-                is_confirmed=True,
-                consecutive_bars=1,
+            self._current_state = self._regime_state(
+                raw_state_id, probability, state_probs,
+                is_confirmed=True, consecutive_bars=1,
             )
             self._consecutive_bars = 1
             return self._current_state
@@ -321,14 +359,9 @@ class HMMEngine:
 
             if self._pending_bars >= stability_bars:
                 self._flicker_history.append(1)
-                self._current_state = RegimeState(
-                    label=self.labels[raw_state_id],
-                    state_id=raw_state_id,
-                    probability=probability,
-                    state_probabilities=state_probs,
-                    timestamp=datetime.utcnow(),
-                    is_confirmed=True,
-                    consecutive_bars=self._pending_bars,
+                self._current_state = self._regime_state(
+                    raw_state_id, probability, state_probs,
+                    is_confirmed=True, consecutive_bars=self._pending_bars,
                 )
                 self._consecutive_bars = self._pending_bars
                 self._pending_regime_id = None
@@ -337,18 +370,16 @@ class HMMEngine:
                     f"Regime confirmed: {self._current_state.label} (p={probability:.3f})"
                 )
                 return self._current_state
-            else:
-                self._flicker_history.append(0)
+
+            self._flicker_history.append(0)
 
         window = self.config.get("flicker_window", 20)
         self._flicker_history = self._flicker_history[-window:]
 
-        return RegimeState(
-            label=self.labels[self._current_state.state_id],
-            state_id=self._current_state.state_id,
-            probability=probability,
-            state_probabilities=state_probs,
-            timestamp=datetime.utcnow(),
+        return self._regime_state(
+            self._current_state.state_id,
+            probability,
+            state_probs,
             is_confirmed=confirmed,
             consecutive_bars=self._consecutive_bars,
         )
@@ -393,7 +424,6 @@ class HMMEngine:
         }
         with open(path, "wb") as f:
             pickle.dump(payload, f)
-        logger.info(f"HMM model saved to {path}")
 
     def load(self, path: str) -> "HMMEngine":
         """Load a previously saved HMM model from path and return self."""
@@ -402,19 +432,15 @@ class HMMEngine:
         self.model = payload["model"]
         self.n_regimes = payload["n_regimes"]
         self.bic_score = payload["bic_score"]
-        self.training_date = payload["training_date"]
+        self.training_date = ensure_utc(payload["training_date"])
         self.labels = payload["labels"]
         self.regime_infos = payload["regime_infos"]
         self._cached_alpha = None
-        logger.info(
-            f"HMM model loaded from {path} "
-            f"(n={self.n_regimes}, trained={self.training_date}, BIC={self.bic_score:.2f})"
-        )
         return self
 
-    def is_stale(self, max_days: int = 7) -> bool:
+    def is_stale(self, max_days: int = 3) -> bool:
         """Return True if the model is untrained or was trained more than max_days ago."""
         if self.training_date is None:
             return True
-        age = (datetime.utcnow() - self.training_date).days
+        age = (utc_now() - ensure_utc(self.training_date)).days
         return age > max_days

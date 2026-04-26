@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _make_synthetic_bars(n: int = 700, seed: int = 42) -> pd.DataFrame:
+def _make_synthetic_bars(n: int = 1000, seed: int = 42) -> pd.DataFrame:
     """Generate synthetic OHLCV bars with alternating volatility regimes for look-ahead tests."""
     rng = np.random.default_rng(seed)
     prices = [100.0]
@@ -47,54 +47,61 @@ def _load_config():
 
 def test_no_look_ahead_bias():
     """
-    Regime at T must be identical with data[0:T] vs data[0:T+100].
-    Tests the forward algorithm implementation is truly causal.
+    Posterior at the same calendar date must match when using a prefix vs a longer series.
+    Compares the forward pass at the last valid date of the short prefix, not the last bar
+    of the long window (which would be a different time step).
     """
     from core.hmm_engine import HMMEngine
+    from data.feature_engineering import get_feature_matrix
 
     config = _load_config()
-    full_data = _make_synthetic_bars(700)
+    full_data = _make_synthetic_bars()
 
     hmm = HMMEngine(config.get("hmm", {}))
     hmm.train(full_data)
 
-    T = 400
+    # Need enough raw bars that the prefix has valid feature rows (warmup ~450+ trading days).
+    T = 600
     additional = 100
 
-    regime_short = hmm.predict_regime_filtered(full_data.iloc[:T])
-    hmm._current_state = None
-    hmm._consecutive_bars = 0
-    hmm._pending_regime_id = None
-    hmm._pending_bars = 0
-    hmm._flicker_history = []
+    bars_s = full_data.iloc[:T]
+    bars_l = full_data.iloc[: T + additional]
+    fm_s, idx_s = get_feature_matrix(bars_s)
+    fm_l, idx_l = get_feature_matrix(bars_l)
+    assert len(fm_s) > 0 and len(fm_l) > 0
 
-    regime_long = hmm.predict_regime_filtered(full_data.iloc[: T + additional])
-    regime_at_T = regime_long
+    t_end = idx_s[-1]
+    assert t_end in idx_l, "long window must include the short window's last valid date"
+    pos_l = idx_l.get_loc(t_end)
+    if isinstance(pos_l, slice):
+        pos_l = pos_l.start
+    else:
+        pos_l = int(pos_l) if np.isscalar(pos_l) else int(pos_l.flat[0])
 
-    assert regime_short.state_id == regime_at_T.state_id, (
-        f"LOOK-AHEAD BIAS DETECTED: "
-        f"regime at bar {T} with data[0:{T}] = {regime_short.label} ({regime_short.state_id}), "
-        f"but regime at bar {T} with data[0:{T+additional}] = {regime_at_T.label} ({regime_at_T.state_id}). "
-        f"The forward algorithm is using future data."
+    alpha_s = hmm._forward_pass(fm_s)
+    alpha_l = hmm._forward_pass(fm_l)
+
+    sid_s = int(np.argmax(alpha_s[-1]))
+    sid_l = int(np.argmax(alpha_l[pos_l]))
+
+    assert sid_s == sid_l, (
+        f"LOOK-AHEAD BIAS DETECTED: at {t_end} short-prefix argmax state {sid_s} != "
+        f"same-date state {sid_l} when extra future bars are present."
     )
 
 
 def test_proba_sum_unchanged_by_future_data():
-    """Probability distribution should not shift due to future observations."""
+    """Last-step regime probabilities must be a proper distribution (sum to 1)."""
     from core.hmm_engine import HMMEngine
 
     config = _load_config()
-    full_data = _make_synthetic_bars(700)
+    full_data = _make_synthetic_bars()
 
     hmm = HMMEngine(config.get("hmm", {}))
     hmm.train(full_data)
 
-    T = 400
+    T = 600
     proba_short = hmm.predict_regime_proba(full_data.iloc[:T])
-    proba_long_at_T = hmm._forward_pass(
-        hmm._get_feature_matrix_cached(full_data.iloc[:T])
-    )[-1] if hasattr(hmm, "_get_feature_matrix_cached") else proba_short
-
     assert abs(proba_short.sum() - 1.0) < 1e-5
 
 
@@ -106,12 +113,12 @@ def test_backtest_end_date_invariance():
     from backtest.backtester import WalkForwardBacktester
 
     config = _load_config()
-    full_data = _make_synthetic_bars(700)
+    full_data = _make_synthetic_bars()
     backtester = WalkForwardBacktester(config)
 
     try:
-        result_short = backtester.run("TEST", full_data.iloc[:550], verbose=False)
-        result_long = backtester.run("TEST", full_data.iloc[:650], verbose=False)
+        result_short = backtester.run("TEST", full_data.iloc[:550])
+        result_long = backtester.run("TEST", full_data.iloc[:650])
 
         overlap_end = min(len(result_short.equity_curve.dropna()), len(result_long.equity_curve.dropna()))
         if overlap_end > 300:

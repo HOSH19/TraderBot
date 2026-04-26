@@ -3,7 +3,7 @@ Combines HMM regime state + strategy orchestrator into the unified signal pipeli
 """
 
 import logging
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -27,11 +27,8 @@ class SignalGenerator:
         symbols: List[str],
         bars_by_symbol: Dict[str, pd.DataFrame],
         current_allocations: Optional[Dict[str, float]] = None,
-    ) -> tuple:
-        """
-        Returns (signals, regime_state) for the current bar.
-        Uses the primary symbol (first in list) to detect the regime.
-        """
+    ) -> Tuple[List[Signal], Optional[RegimeState]]:
+        """Produce strategy signals and regime state using the first symbol as the HMM series."""
         primary = symbols[0]
         primary_bars = bars_by_symbol.get(primary)
 
@@ -46,8 +43,6 @@ class SignalGenerator:
             return [], None
 
         is_flickering = self.hmm.is_flickering()
-        if is_flickering:
-            logger.warning(f"Flicker rate high ({self.hmm.get_regime_flicker_rate()}) — uncertainty mode active")
 
         signals = self.orchestrator.generate_signals(
             symbols=symbols,

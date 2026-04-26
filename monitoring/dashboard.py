@@ -11,6 +11,8 @@ import os
 from datetime import datetime
 from typing import List, Optional
 
+from core.timeutil import ensure_utc, utc_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -46,7 +48,7 @@ class Dashboard:
         if signals:
             for s in signals:
                 self._recent_signals.insert(0, {
-                    "time": datetime.utcnow().strftime("%H:%M"),
+                    "time": utc_now().strftime("%H:%M"),
                     "symbol": s.symbol,
                     "direction": s.direction,
                     "alloc": f"{s.position_size_pct*100:.0f}%",
@@ -154,12 +156,12 @@ class Dashboard:
         mode = "PAPER" if self.cfg.get("broker", {}).get("paper_trading", True) else "LIVE"
         hmm_age = ""
         if self._hmm_training_date:
-            days_ago = (datetime.utcnow() - self._hmm_training_date).days
+            days_ago = (utc_now() - ensure_utc(self._hmm_training_date)).days
             hmm_age = f"{days_ago}d ago"
 
         system_panel = Panel(
             f"Data: ✓  |  API: ✓  |  HMM: {hmm_age}  |  {mode}  |  "
-            f"{datetime.utcnow().strftime('%H:%M:%S UTC')}",
+            f"{utc_now().strftime('%H:%M:%S UTC')}",
             title="SYSTEM",
         )
 

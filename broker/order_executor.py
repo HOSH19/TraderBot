@@ -51,7 +51,6 @@ class OrderExecutor:
         from alpaca.trading.enums import OrderSide, TimeInForce
 
         if not risk_decision.approved or risk_decision.modified_signal is None:
-            logger.info(f"Order skipped (rejected): {risk_decision.rejection_reason}")
             return None
 
         sig = risk_decision.modified_signal
@@ -68,10 +67,6 @@ class OrderExecutor:
         limit_price = round(sig.entry_price * (1 + LIMIT_OFFSET_PCT), 2)
 
         if self.dry_run:
-            logger.info(
-                f"[DRY-RUN] Would submit LIMIT {sig.direction} {qty} {sig.symbol} "
-                f"@ ${limit_price:.2f} | trade_id={trade_id}"
-            )
             return trade_id
 
         try:
@@ -85,10 +80,6 @@ class OrderExecutor:
             )
             order = self.client.trading_client.submit_order(req)
             self._open_orders[trade_id] = order.id
-            logger.info(
-                f"LIMIT order submitted: {sig.symbol} {sig.direction} qty={qty} "
-                f"price=${limit_price:.2f} trade_id={trade_id} order_id={order.id}"
-            )
 
             time.sleep(ORDER_TIMEOUT_SECONDS)
             try:
@@ -105,7 +96,6 @@ class OrderExecutor:
                             client_order_id=trade_id + "-mkt",
                         )
                         mkt_order = self.client.trading_client.submit_order(mkt_req)
-                        logger.info(f"Retried at MARKET: {sig.symbol} order_id={mkt_order.id}")
                         return mkt_order.id
             except Exception as e:
                 logger.error(f"Failed to check/cancel order {trade_id}: {e}")
@@ -139,10 +129,6 @@ class OrderExecutor:
             return None
 
         if self.dry_run:
-            logger.info(
-                f"[DRY-RUN] Would submit BRACKET {sig.symbol} qty={qty} "
-                f"stop=${sig.stop_loss:.2f} tp={sig.take_profit}"
-            )
             return trade_id
 
         try:
@@ -157,7 +143,6 @@ class OrderExecutor:
                 take_profit=TakeProfitRequest(limit_price=round(sig.take_profit, 2)) if sig.take_profit else None,
             )
             order = self.client.trading_client.submit_order(req)
-            logger.info(f"Bracket order submitted: {sig.symbol} trade_id={trade_id} order_id={order.id}")
             return order.id
         except Exception as e:
             logger.error(f"Bracket order failed for {sig.symbol}: {e}")
@@ -173,7 +158,6 @@ class OrderExecutor:
                 order_id,
                 stop_price=round(new_stop, 2),
             )
-            logger.info(f"Stop tightened: {symbol} ${current_stop:.2f} → ${new_stop:.2f}")
             return True
         except Exception as e:
             logger.error(f"modify_stop failed for {symbol}: {e}")
@@ -186,7 +170,6 @@ class OrderExecutor:
         Returns True on success, False on error.
         """
         if self.dry_run:
-            logger.info(f"[DRY-RUN] Would cancel order {order_id}")
             return True
         try:
             self.client.trading_client.cancel_order_by_id(order_id)
@@ -202,11 +185,9 @@ class OrderExecutor:
         Returns True on success, False on error.
         """
         if self.dry_run:
-            logger.info(f"[DRY-RUN] Would close position {symbol}")
             return True
         try:
             self.client.trading_client.close_position(symbol)
-            logger.info(f"Position closed: {symbol}")
             return True
         except Exception as e:
             logger.error(f"close_position {symbol} failed: {e}")
@@ -219,11 +200,9 @@ class OrderExecutor:
         Returns True on success, False on error.
         """
         if self.dry_run:
-            logger.info("[DRY-RUN] Would close all positions")
             return True
         try:
             self.client.trading_client.close_all_positions(cancel_orders=True)
-            logger.info("All positions closed")
             return True
         except Exception as e:
             logger.error(f"close_all_positions failed: {e}")

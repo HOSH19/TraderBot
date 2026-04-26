@@ -10,10 +10,12 @@ Add to .env:
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 import requests
+
+from core.timeutil import utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +38,8 @@ TICKER_SEARCH_TERMS = {
 def _time_ago(published_at: str) -> str:
     """Convert ISO timestamp to human-readable time ago string."""
     try:
-        dt = datetime.strptime(published_at[:19], "%Y-%m-%dT%H:%M:%S")
-        delta = datetime.utcnow() - dt
+        dt = datetime.strptime(published_at[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        delta = utc_now() - dt
         hours = int(delta.total_seconds() / 3600)
         if hours < 1:
             mins = int(delta.total_seconds() / 60)
@@ -61,7 +63,7 @@ def fetch_top_article(symbol: str, api_key: str) -> Optional[dict]:
         "sortBy": "publishedAt",
         "language": "en",
         "pageSize": 1,
-        "from": (datetime.utcnow() - timedelta(days=3)).strftime("%Y-%m-%d"),
+        "from": (utc_now() - timedelta(days=3)).strftime("%Y-%m-%d"),
         "apiKey": api_key,
     }
 
@@ -101,16 +103,9 @@ def fetch_news_for_symbols(symbols: List[str]) -> Dict[str, Optional[dict]]:
     """
     api_key = os.getenv("NEWSAPI_KEY", "")
     if not api_key:
-        logger.info("NEWSAPI_KEY not set — skipping news fetch")
         return {sym: None for sym in symbols}
 
     results = {}
     for sym in symbols:
-        article = fetch_top_article(sym, api_key)
-        results[sym] = article
-        if article:
-            logger.info(f"News [{sym}]: {article['title'][:60]}... ({article['time_ago']})")
-
-    fetched = sum(1 for v in results.values() if v)
-    logger.info(f"News fetched: {fetched}/{len(symbols)} symbols")
+        results[sym] = fetch_top_article(sym, api_key)
     return results

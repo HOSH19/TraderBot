@@ -10,8 +10,10 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from core.timeutil import utc_now
 
-def _make_synthetic_bars(n: int = 700, seed: int = 42) -> pd.DataFrame:
+
+def _make_synthetic_bars(n: int = 1000, seed: int = 42) -> pd.DataFrame:
     """Generate synthetic OHLCV data with regime-like behavior."""
     rng = np.random.default_rng(seed)
     prices = [100.0]
@@ -52,7 +54,7 @@ class TestHMMEngine:
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
-        bars = _make_synthetic_bars(700)
+        bars = _make_synthetic_bars()
         hmm.train(bars)
         assert hmm.n_regimes in [3, 4, 5, 6, 7]
         assert hmm.bic_score < float("inf")
@@ -62,7 +64,7 @@ class TestHMMEngine:
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
-        bars = _make_synthetic_bars(700)
+        bars = _make_synthetic_bars()
         hmm.train(bars)
         assert len(hmm.labels) == hmm.n_regimes
         for label in hmm.labels:
@@ -73,7 +75,7 @@ class TestHMMEngine:
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
-        bars = _make_synthetic_bars(700)
+        bars = _make_synthetic_bars()
         hmm.train(bars)
         assert len(hmm.regime_infos) == hmm.n_regimes
         for info in hmm.regime_infos:
@@ -85,7 +87,7 @@ class TestHMMEngine:
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
-        bars = _make_synthetic_bars(700)
+        bars = _make_synthetic_bars()
         hmm.train(bars)
         state = hmm.predict_regime_filtered(bars)
         assert state is not None
@@ -97,7 +99,7 @@ class TestHMMEngine:
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
-        bars = _make_synthetic_bars(700)
+        bars = _make_synthetic_bars()
         hmm.train(bars)
         proba = hmm.predict_regime_proba(bars)
         assert abs(proba.sum() - 1.0) < 1e-6
@@ -107,7 +109,7 @@ class TestHMMEngine:
         from core.hmm_engine import HMMEngine
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
-        bars = _make_synthetic_bars(700)
+        bars = _make_synthetic_bars()
         hmm.train(bars)
         path = str(tmp_path / "model.pkl")
         hmm.save(path)
@@ -118,13 +120,12 @@ class TestHMMEngine:
         assert hmm2.labels == hmm.labels
 
     def test_stale_detection(self):
-        """Verify is_stale returns False for a freshly trained model and True after simulating an old training date."""
+        """Verify is_stale returns False for a fresh training_date and True when training_date is old."""
         from core.hmm_engine import HMMEngine
         from datetime import datetime, timedelta
         config = _load_config()
         hmm = HMMEngine(config.get("hmm", {}))
-        bars = _make_synthetic_bars(700)
-        hmm.train(bars)
-        assert not hmm.is_stale(max_days=7)
-        hmm.training_date = datetime.utcnow() - timedelta(days=10)
-        assert hmm.is_stale(max_days=7)
+        hmm.training_date = utc_now()
+        assert not hmm.is_stale(max_days=3)
+        hmm.training_date = utc_now() - timedelta(days=10)
+        assert hmm.is_stale(max_days=3)

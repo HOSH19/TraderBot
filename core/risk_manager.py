@@ -16,6 +16,7 @@ import numpy as np
 import pandas as pd
 
 from core.regime_strategies import Signal
+from core.timeutil import ensure_utc, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class Position:
     @property
     def holding_period_hours(self) -> float:
         """Hours elapsed since the position was entered."""
-        return (datetime.utcnow() - self.entry_time).total_seconds() / 3600
+        return (utc_now() - ensure_utc(self.entry_time)).total_seconds() / 3600
 
 
 @dataclass
@@ -69,7 +70,7 @@ class PortfolioState:
     weekly_start_equity: float = 0.0
     circuit_breaker_status: str = "NORMAL"
     flicker_rate: int = 0
-    last_updated: datetime = field(default_factory=datetime.utcnow)
+    last_updated: datetime = field(default_factory=utc_now)
 
     @property
     def drawdown_from_peak(self) -> float:
@@ -162,7 +163,7 @@ class CircuitBreaker:
         """Write the halt lock file to disk, requiring manual deletion to resume trading."""
         with open(TRADING_HALTED_LOCK, "w") as f:
             f.write(
-                f"Trading halted at {datetime.utcnow().isoformat()}\n"
+                f"Trading halted at {utc_now().isoformat()}\n"
                 f"Peak DD: {portfolio.drawdown_from_peak*100:.2f}%\n"
                 f"Equity: ${portfolio.equity:,.2f}\n"
                 f"Delete this file to resume trading.\n"
@@ -174,7 +175,7 @@ class CircuitBreaker:
         action, reason = self.check(portfolio)
         if action != "NORMAL":
             self._trigger_history.append({
-                "time": datetime.utcnow().isoformat(),
+                "time": utc_now().isoformat(),
                 "action": action,
                 "reason": reason,
                 "equity": portfolio.equity,
@@ -184,14 +185,6 @@ class CircuitBreaker:
             })
             logger.warning(f"Circuit breaker: {action} — {reason}")
         return action, reason
-
-    def reset_daily(self):
-        """Reset any intra-day circuit-breaker state at the start of a new trading day."""
-        pass
-
-    def reset_weekly(self):
-        """Reset any intra-week circuit-breaker state at the start of a new trading week."""
-        pass
 
     def get_history(self) -> List[Dict]:
         """Return the list of all circuit-breaker trigger events recorded so far."""
@@ -371,8 +364,7 @@ class RiskManager:
     def reset_daily_counters(self):
         """Reset the daily trade count at the start of each trading day."""
         self._daily_trade_count = 0
-        logger.info("Daily trade counters reset")
 
     def reset_weekly_counters(self):
         """Reset weekly-level risk counters at the start of each trading week."""
-        logger.info("Weekly counters reset")
+        return

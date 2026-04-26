@@ -30,7 +30,6 @@ class AlpacaClient:
         """
         self.cfg = config
         self.paper_trading = config.get("broker", {}).get("paper_trading", True)
-        self._client = None
         self._trading_client = None
         self._data_client = None
         self._connect()
@@ -68,8 +67,6 @@ class AlpacaClient:
             api_key=api_key,
             secret_key=secret_key,
         )
-        logger.info(f"Alpaca client connected ({'PAPER' if self.paper_trading else 'LIVE'})")
-
     def health_check(self) -> bool:
         """Return True if the Alpaca account is active and reachable."""
         try:
@@ -89,7 +86,6 @@ class AlpacaClient:
             try:
                 self._connect()
                 if self.health_check():
-                    logger.info("Alpaca reconnected successfully")
                     return
             except Exception as e:
                 wait = 2 ** attempt

@@ -7,20 +7,8 @@ Delivery: console, log file, optional email, optional webhook.
 import logging
 import os
 import time
-from typing import Optional
 
 logger = logging.getLogger("alerts")
-
-ALERT_EVENTS = [
-    "regime_change",
-    "circuit_breaker",
-    "large_pnl",
-    "data_feed_down",
-    "api_lost",
-    "hmm_retrained",
-    "flicker_exceeded",
-    "system_error",
-]
 
 
 class AlertManager:
@@ -40,12 +28,8 @@ class AlertManager:
         self._email = os.getenv("ALERT_EMAIL") or config.get("alerts", {}).get("email", "")
         self._webhook = os.getenv("ALERT_WEBHOOK_URL") or config.get("alerts", {}).get("webhook_url", "")
 
-    def send(self, event_type: str, message: str):
-        """Emit an alert, suppressing duplicates within the rate-limit window.
-
-        Logs at WARNING level and forwards to webhook/email if configured.
-        Silently returns if the same event_type was sent within the last rate-limit period.
-        """
+    def send(self, event_type: str, message: str) -> None:
+        """Log and optionally webhook/email; no-op if ``event_type`` was sent inside the rate-limit window."""
         now = time.time()
         last = self._last_sent.get(event_type, 0)
         if now - last < self.rate_limit_secs:
@@ -64,11 +48,9 @@ class AlertManager:
         try:
             import requests
             payload = {"event": event_type, "message": message, "timestamp": time.time()}
-            resp = requests.post(self._webhook, json=payload, timeout=5)
-            if resp.status_code != 200:
-                logger.debug(f"Webhook returned {resp.status_code}")
-        except Exception as e:
-            logger.debug(f"Webhook failed: {e}")
+            requests.post(self._webhook, json=payload, timeout=5)
+        except Exception:
+            pass
 
     def _send_email(self, event_type: str, message: str):
         """Send an alert email to the configured address via localhost SMTP. Errors are logged at DEBUG."""
@@ -84,29 +66,25 @@ class AlertManager:
 
             with smtplib.SMTP("localhost") as smtp:
                 smtp.send_message(msg)
-        except Exception as e:
-            logger.debug(f"Email alert failed: {e}")
+        except Exception:
+            pass
 
-    def on_regime_state(self, current_state, previous_state):
-        """Fire a regime_change alert when the confirmed label transitions between states.
-
-        Args:
-            current_state: Current RegimeState object (must have label, probability, is_confirmed).
-            previous_state: Previous RegimeState object, or None on first call.
-        """
-        if previous_state and current_state:
-            if (hasattr(previous_state, "label") and hasattr(current_state, "label")
-                    and previous_state.label != current_state.label
-                    and current_state.is_confirmed):
-                self.send(
-                    "regime_change",
-                    f"Regime changed: {previous_state.label} → {current_state.label} "
-                    f"(p={current_state.probability:.2f})",
-                )
-
-        if current_state and hasattr(current_state, "probability"):
-            if current_state.probability < self.cfg.get("hmm", {}).get("min_confidence", 0.55):
-                pass
+    def on_regime_state(self, current_state, previous_state) -> None:
+        """Send ``regime_change`` when the confirmed regime label differs from the previous bar."""
+        if not (previous_state and current_state):
+            return
+        if not (
+            getattr(previous_state, "label", None)
+            and getattr(current_state, "label", None)
+            and previous_state.label != current_state.label
+            and current_state.is_confirmed
+        ):
+            return
+        self.send(
+            "regime_change",
+            f"Regime changed: {previous_state.label} → {current_state.label} "
+            f"(p={current_state.probability:.2f})",
+        )
 
     def on_large_pnl(self, symbol: str, pnl_pct: float, threshold: float = 0.05):
         """Send a large_pnl alert when a position's gain or loss exceeds the threshold.

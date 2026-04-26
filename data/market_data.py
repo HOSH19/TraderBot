@@ -11,6 +11,8 @@ from typing import Callable, Dict, List, Optional
 
 import pandas as pd
 
+from core.timeutil import utc_now
+
 logger = logging.getLogger(__name__)
 
 
@@ -44,9 +46,9 @@ class MarketData:
         from alpaca.data.timeframe import TimeFrame
 
         if start is None:
-            start = datetime.utcnow() - timedelta(days=limit * 1.5)
+            start = utc_now() - timedelta(days=limit * 1.5)
         if end is None:
-            end = datetime.utcnow()
+            end = utc_now()
 
         tf_map = {
             "1Day": TimeFrame.Day,
@@ -180,7 +182,6 @@ class MarketData:
 
         def _run():
             """Entry point for the background thread that runs the WebSocket event loop."""
-            logger.info(f"WebSocket stream started for {symbols}")
             stream.run()
 
         self._stream = stream
@@ -192,7 +193,6 @@ class MarketData:
         if self._stream:
             try:
                 self._stream.stop()
-                logger.info("WebSocket stream stopped")
             except Exception as e:
                 logger.warning(f"Error stopping stream: {e}")
 

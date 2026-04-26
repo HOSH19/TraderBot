@@ -12,6 +12,8 @@ Usage:
 """
 
 import argparse
+import csv
+import dataclasses
 import json
 import logging
 import os
@@ -20,6 +22,7 @@ import sys
 import time
 from datetime import datetime, timedelta
 
+import pandas as pd
 import schedule
 import yaml
 from dotenv import load_dotenv
@@ -28,6 +31,8 @@ load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, BASE_DIR)
+
+from core.timeutil import utc_now
 
 STATE_SNAPSHOT_FILE = os.path.join(BASE_DIR, "state_snapshot.json")
 HMM_MODEL_FILE = os.path.join(BASE_DIR, "hmm_model.pkl")
@@ -52,26 +57,30 @@ def load_or_train_hmm(config: dict, market_data, symbols: list):
     """
     Return a ready-to-use HMMEngine, loading from disk or training from scratch.
 
-    Loads the saved model if it exists and is fresh (≤7 days old). Otherwise
+    Loads the saved model if it exists and is fresh (≤ hmm.stale_max_days). Otherwise
     fetches ~3 years of bars for the primary symbol and trains a new model, saving it.
+    Staleness is decided only by training age, not by whether the exchange is open.
     """
     from core.hmm_engine import HMMEngine
 
     hmm = HMMEngine(config.get("hmm", {}))
     primary_symbol = symbols[0]
+    stale_max = int(config.get("hmm", {}).get("stale_max_days", 3))
 
     if os.path.exists(HMM_MODEL_FILE):
         hmm.load(HMM_MODEL_FILE)
-        if not hmm.is_stale(max_days=7):
-            logging.getLogger(__name__).info(f"Loaded HMM from {HMM_MODEL_FILE}")
+        if not hmm.is_stale(max_days=stale_max):
             return hmm
-        logging.getLogger(__name__).info("HMM model is stale (>7 days), retraining...")
+        logging.getLogger(__name__).warning(
+            "HMM stale (>%s days), retraining on %s", stale_max, primary_symbol
+        )
+    else:
+        logging.getLogger(__name__).warning("No HMM on disk; training on %s", primary_symbol)
 
-    logging.getLogger(__name__).info(f"Training HMM on {primary_symbol}...")
     bars = market_data.get_historical_bars(
         primary_symbol,
         timeframe=config.get("broker", {}).get("timeframe", "1Day"),
-        start=datetime.utcnow() - timedelta(days=1200),
+        start=utc_now() - timedelta(days=1200),
     )
     if bars.empty:
         raise RuntimeError(f"No historical data returned for {primary_symbol}")
@@ -85,7 +94,7 @@ def save_state_snapshot(portfolio_state, regime_state):
     """Persist current portfolio and regime state to state_snapshot.json."""
     try:
         snap = {
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": utc_now().isoformat(),
             "equity": portfolio_state.equity,
             "cash": portfolio_state.cash,
             "circuit_breaker_status": portfolio_state.circuit_breaker_status,
@@ -109,16 +118,44 @@ def load_state_snapshot() -> dict:
     return {}
 
 
-def print_session_summary(portfolio_state, start_time: datetime):
-    """Print a summary of session duration, final equity, daily P&L, and circuit-breaker status."""
-    elapsed = (datetime.utcnow() - start_time).total_seconds() / 3600
-    print(f"\n{'='*50}")
-    print(f"SESSION SUMMARY")
-    print(f"Duration: {elapsed:.1f}h")
-    print(f"Final equity: ${portfolio_state.equity:,.2f}")
-    print(f"Daily P&L: ${portfolio_state.daily_pnl:+,.2f}")
-    print(f"Circuit breaker: {portfolio_state.circuit_breaker_status}")
-    print(f"{'='*50}\n")
+def _preload_historical_bars(market_data, symbols: list, timeframe: str) -> dict:
+    """Fetch long history per symbol for HMM/signal context; skip empty series."""
+    out = {}
+    for sym in symbols:
+        df = market_data.get_historical_bars(
+            sym, timeframe=timeframe,
+            start=utc_now() - timedelta(days=1200),
+        )
+        if not df.empty:
+            out[sym] = df
+    return out
+
+
+def _weekly_retrain_hmm(config: dict, market_data, symbols: list, alert_manager, signal_gen):
+    """
+    Train or reload HMM, wire it into the signal generator, notify, and return the new engine.
+
+    Raises on failure so the caller can log.
+    """
+    new_hmm = load_or_train_hmm(config, market_data, symbols)
+    signal_gen.hmm = new_hmm
+    alert_manager.send(
+        "hmm_retrained",
+        f"HMM retrained: n={new_hmm.n_regimes} BIC={new_hmm.bic_score:.1f}",
+    )
+    return new_hmm
+
+
+def _log_session_summary(logger, portfolio_state, start_time: datetime):
+    """Log session duration, final equity, daily P&L, and circuit-breaker status."""
+    elapsed = (utc_now() - start_time).total_seconds() / 3600
+    logger.info(
+        "Session ended | %.1fh | equity=$%.2f | daily_pnl=$%.2f | circuit_breaker=%s",
+        elapsed,
+        portfolio_state.equity,
+        portfolio_state.daily_pnl,
+        portfolio_state.circuit_breaker_status,
+    )
 
 
 def run_trading_loop(config: dict, dry_run: bool = False):
@@ -147,7 +184,7 @@ def run_trading_loop(config: dict, dry_run: bool = False):
 
     symbols = config.get("broker", {}).get("symbols", ["SPY"])
     timeframe = config.get("broker", {}).get("timeframe", "1Day")
-    start_time = datetime.utcnow()
+    start_time = utc_now()
     last_regime_state = None
     shutdown_requested = False
 
@@ -155,9 +192,6 @@ def run_trading_loop(config: dict, dry_run: bool = False):
 
     if not alpaca.health_check():
         raise ConnectionError("Alpaca health check failed on startup")
-
-    if not alpaca.is_market_open() and not dry_run:
-        logger.info("Market is closed. Waiting for next open...")
 
     market_data = MarketData(alpaca)
 
@@ -168,9 +202,6 @@ def run_trading_loop(config: dict, dry_run: bool = False):
     position_tracker.sync_from_alpaca()
 
     prev_snapshot = load_state_snapshot()
-    if prev_snapshot:
-        logger.info(f"Recovered state: equity=${prev_snapshot.get('equity', 0):,.2f} "
-                    f"regime={prev_snapshot.get('regime', 'UNKNOWN')}")
 
     hmm = load_or_train_hmm(config, market_data, symbols)
     orchestrator = StrategyOrchestrator(config.get("strategy", {}), hmm.regime_infos)
@@ -180,14 +211,7 @@ def run_trading_loop(config: dict, dry_run: bool = False):
     alert_manager = AlertManager(config)
     dashboard = Dashboard(config)
 
-    bars_by_symbol: dict = {}
-    for sym in symbols:
-        df = market_data.get_historical_bars(
-            sym, timeframe=timeframe,
-            start=datetime.utcnow() - timedelta(days=1200),
-        )
-        if not df.empty:
-            bars_by_symbol[sym] = df
+    bars_by_symbol = _preload_historical_bars(market_data, symbols, timeframe)
 
     def on_bar(bar):
         """Process an incoming real-time bar: update history, detect regime, validate signals, and place orders."""
@@ -199,7 +223,6 @@ def run_trading_loop(config: dict, dry_run: bool = False):
                 "open": bar.open, "high": bar.high,
                 "low": bar.low, "close": bar.close, "volume": bar.volume,
             }
-            import pandas as pd
             new_df = pd.DataFrame([new_row], index=[bar.timestamp])
             bars_by_symbol[sym] = pd.concat([bars_by_symbol[sym], new_df])
         else:
@@ -214,15 +237,12 @@ def run_trading_loop(config: dict, dry_run: bool = False):
             if portfolio.equity > 0
         }
 
+        prev_regime = last_regime_state
         signals, regime_state = signal_gen.generate(symbols, bars_by_symbol, current_allocations)
         last_regime_state = regime_state
 
         if regime_state:
-            logger.info(
-                f"Regime: {regime_state.label} (p={regime_state.probability:.2f}, "
-                f"confirmed={regime_state.is_confirmed}, bars={regime_state.consecutive_bars})"
-            )
-            alert_manager.on_regime_state(regime_state, last_regime_state)
+            alert_manager.on_regime_state(regime_state, prev_regime)
 
         cb_action, cb_reason = risk_manager.circuit_breaker.update(portfolio)
         if cb_action in ("CLOSE_ALL_DAY", "CLOSE_ALL_WEEK", "HALTED"):
@@ -235,14 +255,7 @@ def run_trading_loop(config: dict, dry_run: bool = False):
         for sig in signals:
             risk_decision = risk_manager.validate_signal(sig, portfolio)
             if risk_decision.approved:
-                order_id = order_executor.submit_order(sig, risk_decision)
-                if order_id:
-                    logger.info(
-                        f"Order submitted: {sig.symbol} {sig.direction} "
-                        f"alloc={sig.position_size_pct*100:.0f}% lev={sig.leverage}x | {sig.reasoning}"
-                    )
-            else:
-                logger.info(f"Signal rejected: {sig.symbol} — {risk_decision.rejection_reason}")
+                order_executor.submit_order(sig, risk_decision)
 
         for sym, pos in portfolio.positions.items():
             if sym in bars_by_symbol and len(bars_by_symbol[sym]) > 0:
@@ -256,10 +269,9 @@ def run_trading_loop(config: dict, dry_run: bool = False):
         """Handle SIGINT/SIGTERM by stopping the stream, saving state, and exiting cleanly."""
         nonlocal shutdown_requested
         shutdown_requested = True
-        logger.info("Shutdown signal received")
         market_data.stop_stream()
         save_state_snapshot(portfolio, last_regime_state)
-        print_session_summary(portfolio, start_time)
+        _log_session_summary(logger, portfolio, start_time)
         sys.exit(0)
 
     signal.signal(signal.SIGINT, handle_shutdown)
@@ -268,16 +280,13 @@ def run_trading_loop(config: dict, dry_run: bool = False):
     def weekly_retrain():
         """Retrain the HMM model weekly and propagate updated regime info to downstream components."""
         nonlocal hmm, orchestrator
-        logger.info("Weekly HMM retrain starting...")
         try:
-            new_hmm = load_or_train_hmm(config, market_data, symbols)
-            hmm = new_hmm
+            hmm = _weekly_retrain_hmm(
+                config, market_data, symbols, alert_manager, signal_gen,
+            )
             orchestrator.update_regime_infos(hmm.regime_infos)
-            signal_gen.hmm = hmm
-            alert_manager.send("hmm_retrained", f"HMM retrained: n={hmm.n_regimes} BIC={hmm.bic_score:.1f}")
-            logger.info("Weekly retrain complete")
         except Exception as e:
-            logger.error(f"Weekly retrain failed: {e}")
+            logger.error("Weekly HMM retrain failed: %s", e)
 
     schedule.every().monday.at("09:00").do(weekly_retrain)
     schedule.every().day.at("00:00").do(risk_manager.reset_daily_counters)
@@ -286,8 +295,8 @@ def run_trading_loop(config: dict, dry_run: bool = False):
     schedule.every().day.at("00:00").do(position_tracker.reset_daily)
 
     market_data.subscribe_bars(symbols, timeframe, on_bar)
-    logger.info("System online")
-    print(f"\n{'='*50}\nREGIME TRADER ONLINE\nSymbols: {symbols}\nMode: {'DRY-RUN' if dry_run else 'PAPER' if config.get('broker',{}).get('paper_trading') else 'LIVE'}\n{'='*50}\n")
+    mode = "DRY-RUN" if dry_run else ("PAPER" if config.get("broker", {}).get("paper_trading") else "LIVE")
+    logger.info("Online | symbols=%s | mode=%s", symbols, mode)
 
     while not shutdown_requested:
         schedule.run_pending()
@@ -320,11 +329,10 @@ def run_backtest(config: dict, args):
     market_data = MarketData(alpaca)
 
     for symbol in symbols:
-        logger.info(f"Running backtest for {symbol} {start.date()} → {end.date()}")
         bars = market_data.get_historical_bars(symbol, start=start, end=end)
 
         if bars.empty:
-            logger.error(f"No data for {symbol}")
+            logger.error("No historical data for %s", symbol)
             continue
 
         backtester = WalkForwardBacktester(config)
@@ -333,28 +341,15 @@ def run_backtest(config: dict, args):
         print_report(result, bars, config.get("backtest", {}).get("risk_free_rate", 0.045))
 
         if args.stress_test:
-            crash = run_crash_injection(bars, config)
-            gap = run_gap_risk(bars, config)
-            misclass = run_regime_misclassification(bars, config)
+            crash = run_crash_injection(bars, config, symbol=symbol)
+            gap = run_gap_risk(bars, config, symbol=symbol)
+            misclass = run_regime_misclassification(bars, config, symbol=symbol)
             print_stress_report(crash, gap, misclass)
 
-        if hasattr(args, "compare") and args.compare:
-            from backtest.performance import buy_and_hold_benchmark, sma200_benchmark, random_allocation_benchmark
-            initial_capital = config.get("backtest", {}).get("initial_capital", 100_000)
-            bah = buy_and_hold_benchmark(bars, initial_capital)
-            sma = sma200_benchmark(bars, initial_capital)
-            rand = random_allocation_benchmark(bars, initial_capital=initial_capital)
-            print(f"\nBenchmarks for {symbol}:")
-            print(f"  Buy & hold: {(bah.iloc[-1]/bah.iloc[0]-1)*100:.2f}%")
-            print(f"  200 SMA:    {(sma.iloc[-1]/sma.iloc[0]-1)*100:.2f}%")
-            print(f"  Random:     {rand['mean']*100:.2f}% ± {rand['std']*100:.2f}%")
-
-        import csv, os
         out_dir = os.path.join(BASE_DIR, "backtest_results")
         os.makedirs(out_dir, exist_ok=True)
         result.equity_curve.to_csv(os.path.join(out_dir, f"{symbol}_equity_curve.csv"))
         if result.trade_log:
-            import dataclasses
             with open(os.path.join(out_dir, f"{symbol}_trade_log.csv"), "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=dataclasses.fields(result.trade_log[0]))
                 writer.writeheader()
@@ -362,7 +357,6 @@ def run_backtest(config: dict, args):
                     writer.writerow(dataclasses.asdict(trade))
         if not result.regime_history.empty:
             result.regime_history.to_csv(os.path.join(out_dir, f"{symbol}_regime_history.csv"))
-        logger.info(f"Results saved to {out_dir}/")
 
 
 def main():
@@ -393,13 +387,10 @@ def main():
         symbols = args.symbols or config.get("broker", {}).get("symbols", ["SPY"])
         alpaca = AlpacaClient(config)
         market_data = MarketData(alpaca)
-        hmm = load_or_train_hmm(config, market_data, symbols)
-        logger.info(f"Training complete: n={hmm.n_regimes} BIC={hmm.bic_score:.2f}")
+        load_or_train_hmm(config, market_data, symbols)
         return
 
     if args.dashboard:
-        from monitoring.dashboard import Dashboard
-        import json
         snap = load_state_snapshot()
         print(json.dumps(snap, indent=2))
         return
@@ -407,7 +398,7 @@ def main():
     try:
         run_trading_loop(config, dry_run=args.dry_run)
     except KeyboardInterrupt:
-        logger.info("Interrupted by user")
+        pass
     except Exception as e:
         import traceback
         logger.critical(f"Unhandled exception: {e}\n{traceback.format_exc()}")

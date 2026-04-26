@@ -59,6 +59,46 @@ def _sortino(returns: pd.Series, risk_free_rate: float = 0.045) -> float:
     return float(excess.mean() / downside * np.sqrt(252))
 
 
+def _trade_stats_from_log(result: BacktestResult) -> Dict[str, float]:
+    """Win rate, averages, and profit factor between successive rebalance marks on the equity curve."""
+    trades = result.trade_log
+    n_trades = len(trades)
+    if n_trades <= 1:
+        return {
+            "win_rate": 0.0,
+            "avg_win_pct": 0.0,
+            "avg_loss_pct": 0.0,
+            "profit_factor": 0.0,
+        }
+
+    trade_returns = []
+    for i in range(1, len(trades)):
+        a = trades[i - 1]
+        b = trades[i]
+        idx_a = result.equity_curve.index.get_loc(a.timestamp) if a.timestamp in result.equity_curve.index else None
+        idx_b = result.equity_curve.index.get_loc(b.timestamp) if b.timestamp in result.equity_curve.index else None
+        if idx_a is not None and idx_b is not None:
+            eq_a = result.equity_curve.iloc[idx_a]
+            eq_b = result.equity_curve.iloc[idx_b]
+            if eq_a > 0:
+                trade_returns.append(eq_b / eq_a - 1)
+
+    trade_returns = np.array(trade_returns)
+    wins = trade_returns[trade_returns > 0]
+    losses = trade_returns[trade_returns < 0]
+    win_rate = len(wins) / len(trade_returns) if len(trade_returns) > 0 else 0.0
+    avg_win = float(wins.mean()) if len(wins) > 0 else 0.0
+    avg_loss = float(losses.mean()) if len(losses) > 0 else 0.0
+    profit_factor = abs(wins.sum() / losses.sum()) if losses.sum() != 0 else float("inf")
+
+    return {
+        "win_rate": win_rate,
+        "avg_win_pct": avg_win * 100,
+        "avg_loss_pct": avg_loss * 100,
+        "profit_factor": profit_factor,
+    }
+
+
 def compute_metrics(
     result: BacktestResult,
     risk_free_rate: float = 0.045,
@@ -79,30 +119,8 @@ def compute_metrics(
     max_dd, max_dd_dur = _max_drawdown(equity)
     calmar = cagr / abs(max_dd) if max_dd != 0 else 0.0
 
-    trades = result.trade_log
-    n_trades = len(trades)
-    if n_trades > 1:
-        trade_returns = []
-        for i in range(1, len(trades)):
-            a = trades[i - 1]
-            b = trades[i]
-            idx_a = result.equity_curve.index.get_loc(a.timestamp) if a.timestamp in result.equity_curve.index else None
-            idx_b = result.equity_curve.index.get_loc(b.timestamp) if b.timestamp in result.equity_curve.index else None
-            if idx_a is not None and idx_b is not None:
-                eq_a = result.equity_curve.iloc[idx_a]
-                eq_b = result.equity_curve.iloc[idx_b]
-                if eq_a > 0:
-                    trade_returns.append(eq_b / eq_a - 1)
-
-        trade_returns = np.array(trade_returns)
-        wins = trade_returns[trade_returns > 0]
-        losses = trade_returns[trade_returns < 0]
-        win_rate = len(wins) / len(trade_returns) if len(trade_returns) > 0 else 0.0
-        avg_win = float(wins.mean()) if len(wins) > 0 else 0.0
-        avg_loss = float(losses.mean()) if len(losses) > 0 else 0.0
-        profit_factor = abs(wins.sum() / losses.sum()) if losses.sum() != 0 else float("inf")
-    else:
-        win_rate = avg_win = avg_loss = profit_factor = 0.0
+    ts = _trade_stats_from_log(result)
+    n_trades = len(result.trade_log)
 
     worst_day = float(returns.min())
     worst_week = float(returns.rolling(5).sum().min()) if len(returns) >= 5 else worst_day
@@ -116,10 +134,10 @@ def compute_metrics(
         "calmar": calmar,
         "max_drawdown_pct": max_dd * 100,
         "max_drawdown_duration_days": max_dd_dur,
-        "win_rate": win_rate,
-        "avg_win_pct": avg_win * 100,
-        "avg_loss_pct": avg_loss * 100,
-        "profit_factor": profit_factor,
+        "win_rate": ts["win_rate"],
+        "avg_win_pct": ts["avg_win_pct"],
+        "avg_loss_pct": ts["avg_loss_pct"],
+        "profit_factor": ts["profit_factor"],
         "total_trades": n_trades,
         "worst_day_pct": worst_day * 100,
         "worst_week_pct": worst_week * 100,

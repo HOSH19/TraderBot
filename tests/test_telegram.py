@@ -49,10 +49,19 @@ class TestTelegramNotifier:
             result = tg.send("test message")
             assert result is False
 
-    def test_briefing_message_format(self, capsys):
-        """send_daily_briefing must return a bool and not raise for a complete set of daily metrics."""
+    def test_briefing_message_format(self, monkeypatch):
+        """send_daily_briefing must return a bool, compose HTML, and never hit the real Telegram API."""
         from monitoring.telegram_notifier import TelegramNotifier
+
         tg = TelegramNotifier()
+        captured: list[str] = []
+
+        def fake_send(message: str) -> bool:
+            captured.append(message)
+            return True
+
+        monkeypatch.setattr(tg, "send", fake_send)
+
         result = tg.send_daily_briefing(
             date=datetime(2026, 4, 11),
             regime_label="BULL",
@@ -62,17 +71,24 @@ class TestTelegramNotifier:
             equity=105_230.0,
             daily_pnl=340.0,
             daily_pnl_pct=0.32,
-            peak_dd_pct=-1.2,
             circuit_breaker="NORMAL",
-            signals=[{"symbol": "SPY", "direction": "LONG", "alloc_pct": 95, "entry": 520.30, "stop": 508.0}],
+            signals=[{"symbol": "SPY", "direction": "LONG", "alloc_pct": 95, "entry": 520.30}],
             orders_placed=[{"symbol": "SPY", "side": "BUY", "qty": 50, "price": 520.82}],
-            positions=[{"symbol": "SPY", "shares": 200, "pnl_pct": 1.2, "stop": 508.0}],
+            positions=[{"symbol": "SPY", "shares": 200, "pnl_pct": 1.2}],
             paper_trading=True,
+            news={"SPY": {"title": "Test headline", "source": "Test", "url": "https://example.com", "time_ago": "1h ago"}},
         )
-        assert isinstance(result, bool)
+        assert result is True
+        assert len(captured) == 1
+        body = captured[0]
+        assert "HMM TRADER DAILY BRIEFING" in body
+        assert "From Peak" not in body
+        assert "TOP NEWS" in body
+        assert "Test headline" in body
 
 
 if __name__ == "__main__":
-    """Run the full daily pipeline and send the real Telegram message."""
+    """Send a real briefing via Telegram (same as production cron). Requires .env credentials."""
     import run_daily
+
     run_daily.run()

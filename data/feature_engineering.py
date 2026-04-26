@@ -4,6 +4,8 @@ All features use only past/present data — no look-ahead.
 All features are standardized with 252-period rolling z-scores.
 """
 
+from typing import Tuple
+
 import numpy as np
 import pandas as pd
 
@@ -129,7 +131,7 @@ def compute_features(bars: pd.DataFrame, zscore_window: int = 252) -> pd.DataFra
     """
     Compute all HMM input features from OHLCV bars.
     bars must have columns: open, high, low, close, volume (case-insensitive).
-    Returns a DataFrame of standardized features with NaN rows dropped.
+    Returns a DataFrame of standardized features (rows may contain NaN until warmup).
     """
     bars = bars.copy()
     bars.columns = [c.lower() for c in bars.columns]
@@ -166,11 +168,10 @@ def compute_features(bars: pd.DataFrame, zscore_window: int = 252) -> pd.DataFra
     return features
 
 
-def get_feature_matrix(bars: pd.DataFrame, zscore_window: int = 252) -> tuple:
-    """
-    Returns (feature_array, valid_index) where feature_array has no NaNs.
-    Use valid_index to align predictions back to the original bar index.
-    """
+def get_feature_matrix(
+    bars: pd.DataFrame, zscore_window: int = 252
+) -> Tuple[np.ndarray, pd.Index]:
+    """Stack feature rows with NaNs dropped; return values and their original bar index."""
     features = compute_features(bars, zscore_window)
     valid = features.dropna()
     return valid.values, valid.index
