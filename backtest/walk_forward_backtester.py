@@ -135,6 +135,14 @@ class WalkForwardBacktester:
         bars = bars.copy()
         bars.columns = [c.lower() for c in bars.columns]
 
+        # Fetch macro features once for the full date range; sliced per window below.
+        macro_df = None
+        if self.cfg.get("hmm", {}).get("use_macro_features", True):
+            from data.macro_fetcher import fetch_macro_df
+            macro_df = fetch_macro_df(
+                bars.index[0].to_pydatetime(), bars.index[-1].to_pydatetime()
+            )
+
         train_window = self.bt_cfg.get("train_window", 252)
         test_window = self.bt_cfg.get("test_window", 126)
         step_size = self.bt_cfg.get("step_size", 126)
@@ -172,6 +180,8 @@ class WalkForwardBacktester:
             oos_bars = bars.iloc[oos_start: oos_end]
 
             hmm = HMMEngine(self.cfg.get("hmm", {}))
+            if macro_df is not None:
+                hmm.set_macro_df(macro_df)
             try:
                 hmm.train(is_bars)
             except Exception as e:

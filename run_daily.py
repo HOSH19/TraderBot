@@ -96,15 +96,31 @@ def _fetch_bars(market_data, symbols, timeframe, logger):
 def _load_or_train_hmm(config, primary_bars, logger):
     """Load ``hmm_model.pkl`` or fit/save when missing or older than ``stale_max_days``.
 
-    Runs regardless of session clock so weekend cron still refreshes the model.
+    Fetches macro features (VIX, yield curve, credit proxy) and attaches them to the
+    engine before training or prediction so the model uses the enriched feature set.
     """
     from core.hmm import HMMEngine
+    from data.macro_fetcher import fetch_macro_df
+
     hmm = HMMEngine(config.get("hmm", {}))
     stale_max = int(config.get("hmm", {}).get("stale_max_days", 3))
+
+    if config.get("hmm", {}).get("use_macro_features", True):
+        macro_df = fetch_macro_df(
+            primary_bars.index[0].to_pydatetime(),
+            primary_bars.index[-1].to_pydatetime(),
+        )
+        hmm.set_macro_df(macro_df)
 
     if os.path.exists(HMM_MODEL_FILE):
         try:
             hmm.load(HMM_MODEL_FILE)
+            # After load, refresh macro_df so prediction uses current data
+            if config.get("hmm", {}).get("use_macro_features", True):
+                hmm.set_macro_df(fetch_macro_df(
+                    primary_bars.index[0].to_pydatetime(),
+                    primary_bars.index[-1].to_pydatetime(),
+                ))
         except (ModuleNotFoundError, AttributeError) as e:
             # Stale pickle from old module path (pre-refactor); discard and retrain.
             logger.warning("HMM pickle incompatible (%s) — retraining from scratch", e)

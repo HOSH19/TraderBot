@@ -1,9 +1,10 @@
 """Causal OHLCV features and rolling z-scores for :class:`~core.hmm.engine.HMMEngine`.
 
 Every series uses information available at or before each bar; default z-score window is 252 sessions.
+Optional macro features (VIX, yield curve, credit proxy) are appended when a macro DataFrame is supplied.
 """
 
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -126,11 +127,17 @@ def rolling_zscore(series: pd.Series, window: int = 252) -> pd.Series:
     return (series - mean) / (std + 1e-10)
 
 
-def compute_features(bars: pd.DataFrame, zscore_window: int = 252) -> pd.DataFrame:
+def compute_features(
+    bars: pd.DataFrame,
+    macro_df: Optional[pd.DataFrame] = None,
+    zscore_window: int = 252,
+) -> pd.DataFrame:
     """Build the full feature matrix (z-scored columns) from OHLCV ``bars``.
 
     Args:
         bars: Must expose ``open``, ``high``, ``low``, ``close``, ``volume`` (any case).
+        macro_df: Optional DataFrame with columns [vix, yield_spread, credit_proxy].
+                  When supplied, three macro features are appended after price features.
         zscore_window: Rolling window for standardization (default 252).
 
     Returns:
@@ -167,18 +174,39 @@ def compute_features(bars: pd.DataFrame, zscore_window: int = 252) -> pd.DataFra
 
     features["norm_atr"] = rolling_zscore(compute_normalized_atr(high, low, close, 14), zscore_window)
 
+    if macro_df is not None:
+        features = _append_macro_features(features, macro_df, zscore_window)
+
     features = features.replace([np.inf, -np.inf], np.nan)
     return features
 
 
+def _append_macro_features(
+    features: pd.DataFrame, macro_df: pd.DataFrame, zscore_window: int
+) -> pd.DataFrame:
+    """Forward-fill macro_df to match ``features`` index and append z-scored columns."""
+    aligned = macro_df.reindex(features.index, method="ffill")
+    for col in ("vix", "yield_spread", "credit_proxy"):
+        if col in aligned.columns:
+            features[f"macro_{col}"] = rolling_zscore(aligned[col], zscore_window)
+    return features
+
+
 def get_feature_matrix(
-    bars: pd.DataFrame, zscore_window: int = 252
+    bars: pd.DataFrame,
+    macro_df: Optional[pd.DataFrame] = None,
+    zscore_window: int = 252,
 ) -> Tuple[np.ndarray, pd.Index]:
     """Return ``compute_features`` rows with complete cases only.
 
+    Args:
+        bars: OHLCV history.
+        macro_df: Optional macro features to append (see ``compute_features``).
+        zscore_window: Rolling window for z-scoring.
+
     Returns:
-        ``(values, index)`` where ``values`` is ``float64`` ndarray suitable for ``hmmlearn``.
+        ``(values, index)`` where ``values`` is a ``float64`` ndarray for model fitting.
     """
-    features = compute_features(bars, zscore_window)
+    features = compute_features(bars, macro_df=macro_df, zscore_window=zscore_window)
     valid = features.dropna()
     return valid.values, valid.index

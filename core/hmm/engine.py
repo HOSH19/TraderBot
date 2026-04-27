@@ -1,21 +1,23 @@
-"""Gaussian HMM regime detector used as a volatility / environment classifier.
+"""HMM regime detector: BIC model selection, stability filtering, and live forward inference.
 
+Supports Gaussian and Student-t emission models via ``emission_type`` config key.
 Live inference uses the forward algorithm only (never Viterbi) to avoid look-ahead bias.
-Training selects the state count via BIC over ``n_components`` in ``[3, 4, 5, 6, 7]``.
+Macro features (VIX, yield curve, credit proxy) are used when stored via ``set_macro_df``.
 """
 
 import pickle
 import logging
-import warnings
 from datetime import datetime
-from typing import List, Optional, Dict, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
-from hmmlearn import hmm
 
+from core.hmm.base_model import BaseHMMModel
+from core.hmm.gaussian_model import GaussianHMMModel
 from core.hmm.labels import REGIME_LABELS
 from core.hmm.regime_info import RegimeInfo
 from core.hmm.regime_state import RegimeState
+from core.hmm.student_t_model import StudentTHMMModel
 from core.timeutil import ensure_utc, utc_now
 from data.feature_engineering import get_feature_matrix
 
@@ -23,16 +25,21 @@ logger = logging.getLogger(__name__)
 
 
 class HMMEngine:
-    """Market regime detector: Gaussian HMM, BIC model selection, and stability filtering."""
+    """Market regime detector: pluggable emission model, BIC selection, and stability filter."""
 
     def __init__(self, config: dict) -> None:
         """Create an engine from settings.
 
         Args:
-            config: HMM hyperparameters and thresholds (e.g. ``min_train_bars``, ``n_candidates``).
+            config: HMM hyperparameters. Key options:
+                    ``emission_type`` (``"gaussian"`` or ``"student_t"``),
+                    ``student_t_dof``, ``n_candidates``, ``n_init``,
+                    ``min_train_bars``, ``stability_bars``, ``flicker_threshold``.
         """
         self.config = config
-        self.model: Optional[hmm.GaussianHMM] = None
+        self._model: Optional[BaseHMMModel] = None
+        self._macro_df = None
+
         self.n_regimes: int = 0
         self.regime_infos: List[RegimeInfo] = []
         self.training_date: Optional[datetime] = None
@@ -45,115 +52,161 @@ class HMMEngine:
         self._pending_bars: int = 0
         self._flicker_history: List[int] = []
 
+    # ------------------------------------------------------------------ #
+    # Public API                                                           #
+    # ------------------------------------------------------------------ #
+
+    def set_macro_df(self, macro_df) -> None:
+        """Store macro features used by ``predict_regime_filtered`` and ``train``."""
+        self._macro_df = macro_df
+
     def train(self, bars) -> "HMMEngine":
-        """Fit the HMM with BIC-selected state count and build regime metadata.
+        """Fit an emission model with BIC-selected state count and build regime metadata.
 
         Args:
-            bars: OHLCV bars (DataFrame) used for feature extraction and training.
+            bars: OHLCV DataFrame. Macro features from ``set_macro_df`` are merged automatically.
 
         Returns:
             ``self`` for chaining.
 
         Raises:
-            ValueError: If fewer than ``min_train_bars`` rows remain after feature computation.
+            ValueError: If fewer than ``min_train_bars`` valid rows remain after feature extraction.
         """
-        feature_matrix, valid_idx = get_feature_matrix(bars)
+        feature_matrix, _ = get_feature_matrix(bars, macro_df=self._macro_df)
 
-        if len(feature_matrix) < self.config.get("min_train_bars", 504):
+        min_bars = self.config.get("min_train_bars", 504)
+        if len(feature_matrix) < min_bars:
             raise ValueError(
-                f"Need at least {self.config.get('min_train_bars', 504)} bars after feature "
-                f"computation, got {len(feature_matrix)}."
+                f"Need at least {min_bars} bars after feature computation, got {len(feature_matrix)}."
             )
 
         candidates = self.config.get("n_candidates", [3, 4, 5, 6, 7])
         n_init = self.config.get("n_init", 10)
-        cov_type = self.config.get("covariance_type", "full")
 
-        best_bic, best_model, best_n, bic_scores = self._select_by_bic(
-            feature_matrix, candidates, n_init, cov_type
-        )
-        logger.info("HMM trained: n_regimes=%s BIC=%.2f", best_n, best_bic)
+        best_bic, self._model, best_n = self._select_by_bic(feature_matrix, candidates, n_init)
+        logger.info("HMM trained: emission=%s n_regimes=%s BIC=%.2f",
+                    self.config.get("emission_type", "gaussian"), best_n, best_bic)
 
-        self.model = best_model
         self.n_regimes = best_n
         self.bic_score = best_bic
         self.training_date = utc_now()
-        self._cached_alpha = None
-
         self._build_regime_infos(feature_matrix)
         return self
 
-    def _select_by_bic(
-        self,
-        feature_matrix: np.ndarray,
-        candidates: List[int],
-        n_init: int,
-        cov_type: str,
-    ) -> Tuple[float, hmm.GaussianHMM, int, Dict[int, float]]:
-        """Fit each candidate state count and pick the lowest-BIC model.
+    def predict_regime_filtered(self, bars) -> RegimeState:
+        """Run the forward algorithm on ``bars`` and apply the stability filter.
+
+        Uses macro features stored via ``set_macro_df`` if available.
+
+        Args:
+            bars: OHLCV history ending at the bar to score.
 
         Returns:
-            Tuple of best BIC score, fitted model, winning ``n_components``, and all BIC scores.
-        """
-        best_bic = float("inf")
-        best_model = None
-        best_n: Optional[int] = None
-        bic_scores: Dict[int, float] = {}
-
-        for n in candidates:
-            bic, model = self._fit_with_bic(feature_matrix, n, n_init, cov_type)
-            bic_scores[n] = bic
-            if bic < best_bic:
-                best_bic = bic
-                best_model = model
-                best_n = n
-
-        assert best_model is not None and best_n is not None
-        return best_bic, best_model, best_n, bic_scores
-
-    def _fit_with_bic(
-        self, X: np.ndarray, n: int, n_init: int, cov_type: str
-    ) -> Tuple[float, hmm.GaussianHMM]:
-        """Fit one candidate ``n_components`` with multiple random restarts.
-
-        Returns:
-            BIC score and the best-scoring fitted ``GaussianHMM``.
+            Filtered ``RegimeState`` for the final bar.
 
         Raises:
-            RuntimeError: If every fit attempt fails.
+            RuntimeError: If the model has not been trained.
+            ValueError: If no valid feature rows remain.
+        """
+        if self._model is None:
+            raise RuntimeError("Model not trained. Call train() first.")
+
+        feature_matrix, _ = get_feature_matrix(bars, macro_df=self._macro_df)
+        if len(feature_matrix) == 0:
+            raise ValueError("No valid feature rows after NaN removal.")
+
+        log_emit = self._model.log_emission_matrix(feature_matrix)
+        alpha = self._forward_pass(log_emit)
+        state_probs = self._normalize_log(np.log(alpha[-1] + 1e-300))
+        state_id = int(np.argmax(state_probs))
+        probability = float(state_probs[state_id])
+
+        return self._apply_stability_filter(state_id, probability, state_probs)
+
+    def predict_regime_proba(self, bars) -> np.ndarray:
+        """Return state probabilities at the final bar without the stability filter.
+
+        Returns:
+            Array of shape ``(K,)`` summing to 1.
+        """
+        feature_matrix, _ = get_feature_matrix(bars, macro_df=self._macro_df)
+        log_emit = self._model.log_emission_matrix(feature_matrix)
+        alpha = self._forward_pass(log_emit)
+        return alpha[-1]
+
+    # ------------------------------------------------------------------ #
+    # Model selection                                                      #
+    # ------------------------------------------------------------------ #
+
+    def _select_by_bic(
+        self, X: np.ndarray, candidates: List[int], n_init: int
+    ) -> Tuple[float, BaseHMMModel, int]:
+        """Fit each candidate state count and return the lowest-BIC model."""
+        best_bic = float("inf")
+        best_model: Optional[BaseHMMModel] = None
+        best_n: Optional[int] = None
+
+        for n in candidates:
+            bic, model = self._fit_with_bic(X, n, n_init)
+            if bic < best_bic:
+                best_bic, best_model, best_n = bic, model, n
+
+        assert best_model is not None and best_n is not None
+        return best_bic, best_model, best_n
+
+    def _fit_with_bic(self, X: np.ndarray, n: int, n_init: int) -> Tuple[float, BaseHMMModel]:
+        """Fit one candidate with multiple random restarts; return BIC and best model.
+
+        Raises:
+            RuntimeError: If every restart fails.
         """
         best_score = float("-inf")
-        best_model = None
+        best_model: Optional[BaseHMMModel] = None
 
-        for seed in range(n_init):
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                m = hmm.GaussianHMM(
-                    n_components=n,
-                    covariance_type=cov_type,
-                    n_iter=200,
-                    random_state=seed,
-                    tol=1e-4,
-                )
-                try:
-                    m.fit(X)
-                    score = m.score(X)
-                    if score > best_score:
-                        best_score = score
-                        best_model = m
-                except Exception:
-                    continue
+        emission_type = self.config.get("emission_type", "gaussian")
+        # Fewer restarts for Student-t since k-means init is stable
+        effective_inits = n_init if emission_type == "gaussian" else max(3, n_init // 3)
+
+        for seed in range(effective_inits):
+            model = self._build_model(n, seed)
+            try:
+                model.fit(X)
+                score = model.score(X)
+                if score > best_score:
+                    best_score = score
+                    best_model = model
+            except Exception:
+                continue
 
         if best_model is None:
             raise RuntimeError(f"All HMM fits failed for n_components={n}")
 
-        n_params = n * n + n * X.shape[1] + n * X.shape[1] * X.shape[1]
+        n_params = best_model.n_free_params(X.shape[1])
         bic = -2 * best_score + n_params * np.log(len(X))
         return bic, best_model
 
+    def _build_model(self, n_components: int, seed: int) -> BaseHMMModel:
+        """Instantiate the configured emission model for one BIC candidate."""
+        emission_type = self.config.get("emission_type", "gaussian")
+        cov_type = self.config.get("covariance_type", "full")
+        dof = float(self.config.get("student_t_dof", 4.0))
+
+        if emission_type == "student_t":
+            return StudentTHMMModel(n_components=n_components, dof=dof)
+        return GaussianHMMModel(
+            n_components=n_components,
+            covariance_type=cov_type,
+            n_iter=200,
+            random_state=seed,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Regime metadata                                                      #
+    # ------------------------------------------------------------------ #
+
     def _build_regime_infos(self, feature_matrix: np.ndarray) -> None:
         """Assign return-ordered labels and build ``RegimeInfo`` rows from training features."""
-        hidden_seq = self.model.predict(feature_matrix)
+        hidden_seq = self._model.predict(feature_matrix)
         mean_returns, mean_vols = self._state_mean_returns_vols(feature_matrix, hidden_seq)
         self._assign_return_ordered_labels(mean_returns)
         vol_rank_frac = self._vol_rank_fractions(mean_vols)
@@ -176,7 +229,7 @@ class HMMEngine:
     def _state_mean_returns_vols(
         self, feature_matrix: np.ndarray, hidden_seq: np.ndarray
     ) -> Tuple[List[float], List[float]]:
-        """Mean return (feature col 0) and mean |vol| (col 3) per state from Viterbi paths."""
+        """Mean return (col 0) and mean |vol| (col 3) per state from Viterbi paths."""
         mean_returns: List[float] = []
         mean_vols: List[float] = []
         ret_col, vol_col = 0, 3
@@ -201,7 +254,7 @@ class HMMEngine:
             self.labels[int(regime_id)] = labels_for_n[rank]
 
     def _vol_rank_fractions(self, mean_vols: List[float]) -> np.ndarray:
-        """Volatility rank of each state in ``[0, 1]`` (0 = calmest among states)."""
+        """Volatility rank of each state in [0, 1] (0 = calmest)."""
         sorted_by_vol = np.argsort(mean_vols)
         vol_ranks = np.empty(self.n_regimes)
         denom = max(self.n_regimes - 1, 1)
@@ -218,105 +271,48 @@ class HMMEngine:
             return "HighVolDefensive", 1.0, 0.60
         return "MidVolCautious", 1.0, 0.95
 
-    def predict_regime_filtered(self, bars) -> RegimeState:
-        """Filtered state probabilities at the last bar using the forward algorithm only.
+    # ------------------------------------------------------------------ #
+    # Forward algorithm                                                    #
+    # ------------------------------------------------------------------ #
 
-        Does not use Viterbi / ``predict()`` on the live path. Applies the stability filter
-        and updates flicker bookkeeping. Caches the final alpha vector for incremental use.
+    def _forward_pass(self, log_emit: np.ndarray) -> np.ndarray:
+        """Normalized forward recursion on a precomputed (T, K) log-emission matrix.
 
-        Args:
-            bars: OHLCV history (DataFrame) ending at the bar to score.
-
-        Returns:
-            ``RegimeState`` for the last row after stability filtering.
-
-        Raises:
-            RuntimeError: If the model is not trained.
-            ValueError: If no valid feature rows remain.
-        """
-        if self.model is None:
-            raise RuntimeError("Model not trained. Call train() first.")
-
-        feature_matrix, valid_idx = get_feature_matrix(bars)
-        if len(feature_matrix) == 0:
-            raise ValueError("No valid feature rows after NaN removal.")
-
-        alpha = self._forward_pass(feature_matrix)
-        state_probs = alpha[-1]
-        state_id = int(np.argmax(state_probs))
-        probability = float(state_probs[state_id])
-
-        regime_state = self._apply_stability_filter(state_id, probability, state_probs)
-        return regime_state
-
-    def predict_regime_proba(self, bars) -> np.ndarray:
-        """Return the regime probability vector for the last bar.
+        Per-step normalization prevents underflow without requiring full log-space arithmetic.
 
         Args:
-            bars: OHLCV history (DataFrame).
+            log_emit: Log-emission probabilities of shape (T, K).
 
         Returns:
-            Length-``n_regimes`` probability vector (forward filter at ``t = T-1``).
+            Normalized alpha matrix of shape (T, K); each row sums to 1.
         """
-        feature_matrix, _ = get_feature_matrix(bars)
-        alpha = self._forward_pass(feature_matrix)
-        return alpha[-1]
-
-    def _forward_pass(self, X: np.ndarray) -> np.ndarray:
-        """Run the HMM forward recursion with per-step normalization.
-
-        Each row ``alpha[t]`` is ``P(o_1..t, s_t | λ)`` normalized to sum to 1.
-
-        Args:
-            X: Feature matrix ``(n_obs, n_features)``.
-
-        Returns:
-            Array of shape ``(n_obs, n_states)`` of filtered state probabilities.
-        """
-        n_states = self.model.n_components
-        n_obs = len(X)
+        n_obs, n_states = log_emit.shape
         alpha = np.zeros((n_obs, n_states))
 
-        log_emission_0 = self._log_emission(X[0])
-        log_alpha_0 = np.log(self.model.startprob_ + 1e-300) + log_emission_0
+        log_alpha_0 = np.log(self._model.startprob_ + 1e-300) + log_emit[0]
         alpha[0] = self._normalize_log(log_alpha_0)
 
-        log_transmat = np.log(self.model.transmat_ + 1e-300)
-
+        log_transmat = np.log(self._model.transmat_ + 1e-300)
         for t in range(1, n_obs):
-            log_alpha_prev = np.log(alpha[t - 1] + 1e-300)
-            log_alpha_t = np.logaddexp.reduce(
-                log_alpha_prev[:, None] + log_transmat, axis=0
-            ) + self._log_emission(X[t])
+            log_alpha_t = (
+                np.logaddexp.reduce(np.log(alpha[t - 1] + 1e-300)[:, None] + log_transmat, axis=0)
+                + log_emit[t]
+            )
             alpha[t] = self._normalize_log(log_alpha_t)
 
         return alpha
 
-    def _log_emission(self, obs: np.ndarray) -> np.ndarray:
-        """Log emission density for Gaussian emissions per state for one observation."""
-        log_probs = np.zeros(self.model.n_components)
-        for i in range(self.model.n_components):
-            diff = obs - self.model.means_[i]
-            cov = self.model.covars_[i]
-            try:
-                inv_cov = np.linalg.inv(cov)
-                sign, log_det = np.linalg.slogdet(cov)
-                if sign <= 0:
-                    log_probs[i] = -1e10
-                    continue
-                log_probs[i] = -0.5 * (diff @ inv_cov @ diff + log_det + len(obs) * np.log(2 * np.pi))
-            except np.linalg.LinAlgError:
-                log_probs[i] = -1e10
-        return log_probs
-
     @staticmethod
     def _normalize_log(log_alpha: np.ndarray) -> np.ndarray:
-        """Stabilize log alphas and convert them to a normalized probability vector."""
-        max_val = np.max(log_alpha)
-        shifted = log_alpha - max_val
+        """Convert log-probabilities to a normalized probability vector."""
+        shifted = log_alpha - np.max(log_alpha)
         alpha = np.exp(shifted)
         total = alpha.sum()
         return alpha / (total + 1e-300) if total > 0 else np.ones_like(alpha) / len(alpha)
+
+    # ------------------------------------------------------------------ #
+    # Stability filter                                                     #
+    # ------------------------------------------------------------------ #
 
     def _regime_state(
         self,
@@ -327,7 +323,7 @@ class HMMEngine:
         is_confirmed: bool,
         consecutive_bars: int,
     ) -> RegimeState:
-        """Construct a ``RegimeState`` snapshot for the given argmax state and filter flags."""
+        """Construct a ``RegimeState`` snapshot for the given state and filter flags."""
         return RegimeState(
             label=self.labels[state_id],
             state_id=state_id,
@@ -415,9 +411,7 @@ class HMMEngine:
         self._consecutive_bars = self._pending_bars
         self._pending_regime_id = None
         self._pending_bars = 0
-        logger.warning(
-            "Regime confirmed: %s (p=%.3f)", self._current_state.label, probability
-        )
+        logger.warning("Regime confirmed: %s (p=%.3f)", self._current_state.label, probability)
         return self._current_state
 
     def _trim_flicker_window(self) -> None:
@@ -425,19 +419,23 @@ class HMMEngine:
         window = self.config.get("flicker_window", 20)
         self._flicker_history = self._flicker_history[-window:]
 
+    # ------------------------------------------------------------------ #
+    # Diagnostic accessors                                                 #
+    # ------------------------------------------------------------------ #
+
     def get_regime_stability(self) -> int:
         """Number of consecutive bars in the current confirmed regime."""
         return self._consecutive_bars
 
     def get_transition_matrix(self) -> np.ndarray:
-        """Return the trained transition matrix ``A`` where ``A[i,j] = P(s_t=j | s_{t-1}=i)``.
+        """Trained transition matrix A where A[i,j] = P(s_t=j | s_{t-1}=i).
 
         Raises:
             RuntimeError: If the model is not trained.
         """
-        if self.model is None:
+        if self._model is None:
             raise RuntimeError("Model not trained.")
-        return self.model.transmat_
+        return self._model.transmat_
 
     def detect_regime_change(self) -> bool:
         """Whether a regime change was confirmed on the current update."""
@@ -457,10 +455,15 @@ class HMMEngine:
             return None
         return self.regime_infos[self._current_state.state_id]
 
+    # ------------------------------------------------------------------ #
+    # Persistence                                                          #
+    # ------------------------------------------------------------------ #
+
     def save(self, path: str) -> None:
         """Pickle the fitted model and regime metadata to ``path``."""
         payload = {
-            "model": self.model,
+            "model": self._model,
+            "macro_df": self._macro_df,
             "n_regimes": self.n_regimes,
             "bic_score": self.bic_score,
             "training_date": self.training_date,
@@ -473,18 +476,27 @@ class HMMEngine:
     def load(self, path: str) -> "HMMEngine":
         """Restore model and metadata from ``path``.
 
+        Automatically migrates old pickle format (bare hmmlearn model) to the new wrapper.
+
         Returns:
             ``self`` for chaining.
         """
         with open(path, "rb") as f:
             payload = pickle.load(f)
-        self.model = payload["model"]
+
+        raw_model = payload["model"]
+        if isinstance(raw_model, BaseHMMModel):
+            self._model = raw_model
+        else:
+            # Migrate: old format stored a bare hmmlearn GaussianHMM
+            self._model = GaussianHMMModel.from_fitted(raw_model)
+
+        self._macro_df = payload.get("macro_df")
         self.n_regimes = payload["n_regimes"]
         self.bic_score = payload["bic_score"]
         self.training_date = ensure_utc(payload["training_date"])
         self.labels = payload["labels"]
         self.regime_infos = payload["regime_infos"]
-        self._cached_alpha = None
         return self
 
     def is_stale(self, max_days: int = 3) -> bool:
