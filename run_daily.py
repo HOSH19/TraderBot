@@ -103,7 +103,15 @@ def _load_or_train_hmm(config, primary_bars, logger):
     stale_max = int(config.get("hmm", {}).get("stale_max_days", 3))
 
     if os.path.exists(HMM_MODEL_FILE):
-        hmm.load(HMM_MODEL_FILE)
+        try:
+            hmm.load(HMM_MODEL_FILE)
+        except (ModuleNotFoundError, AttributeError) as e:
+            # Stale pickle from old module path (pre-refactor); discard and retrain.
+            logger.warning("HMM pickle incompatible (%s) — retraining from scratch", e)
+            os.remove(HMM_MODEL_FILE)
+            hmm.train(primary_bars)
+            hmm.save(HMM_MODEL_FILE)
+            return hmm
         if hmm.is_stale(max_days=stale_max):
             logger.warning("HMM stale — retraining")
             hmm.train(primary_bars)

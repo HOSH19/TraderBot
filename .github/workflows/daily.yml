@@ -79,9 +79,9 @@ jobs:
           path: |
             ${{ env.PROJECT_DIR }}/hmm_model.pkl
             ${{ env.PROJECT_DIR }}/state_snapshot.json
-          key: regime-${{ runner.os }}-${{ hashFiles('**/config/settings.yaml') }}
+          key: regime-v2-${{ runner.os }}-${{ hashFiles('**/config/settings.yaml') }}
           restore-keys: |
-            regime-${{ runner.os }}-
+            regime-v2-${{ runner.os }}-
 
       - name: Install dependencies
         working-directory: ${{ env.PROJECT_DIR }}
