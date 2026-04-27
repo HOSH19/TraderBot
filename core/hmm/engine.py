@@ -44,7 +44,6 @@ class HMMEngine:
         self._pending_regime_id: Optional[int] = None
         self._pending_bars: int = 0
         self._flicker_history: List[int] = []
-        self._cached_alpha: Optional[np.ndarray] = None
 
     def train(self, bars) -> "HMMEngine":
         """Fit the HMM with BIC-selected state count and build regime metadata.
@@ -246,8 +245,6 @@ class HMMEngine:
         state_probs = alpha[-1]
         state_id = int(np.argmax(state_probs))
         probability = float(state_probs[state_id])
-
-        self._cached_alpha = alpha[-1].copy()
 
         regime_state = self._apply_stability_filter(state_id, probability, state_probs)
         return regime_state

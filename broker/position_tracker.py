@@ -51,7 +51,7 @@ class PositionTracker:
                         symbol=pos.symbol,
                         shares=float(pos.qty),
                         entry_price=float(pos.avg_entry_price),
-                        entry_time=utc_now(),
+                        entry_time=getattr(pos, "created_at", None) or utc_now(),
                         current_price=float(pos.current_price),
                         stop_loss=0.0,
                         regime_at_entry="UNKNOWN",

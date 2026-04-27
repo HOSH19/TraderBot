@@ -2,7 +2,7 @@
 
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple  # noqa: F401 — Tuple used in return annotations
 
 from core.risk.circuit_breaker import CircuitBreaker
 from core.risk.portfolio_state import PortfolioState
@@ -26,7 +26,6 @@ class RiskManager:
         self.circuit_breaker = CircuitBreaker(self.risk_cfg)
         self._daily_trade_count: int = 0
         self._last_trade_times: Dict[str, float] = {}
-        self._returns_history: Dict[str, List[float]] = {}
 
     def validate_signal(
         self,
@@ -70,6 +69,7 @@ class RiskManager:
 
     @staticmethod
     def _reject_circuit_hard_stop(cb_action: str, cb_reason: str) -> Optional[RiskDecision]:
+        """Return a rejection if the circuit breaker is in a hard-stop state, else None."""
         if cb_action not in ("HALTED", "CLOSE_ALL_DAY", "CLOSE_ALL_WEEK"):
             return None
         return RiskDecision(
@@ -82,6 +82,7 @@ class RiskManager:
     def _apply_circuit_size_reduction(
         cb_action: str, signal: Signal, modifications: List[str]
     ) -> Tuple[Signal, List[str]]:
+        """Halve position size when the circuit breaker signals a soft reduction."""
         if cb_action not in ("REDUCE_50_DAY", "REDUCE_50_WEEK"):
             return signal, modifications
         signal = Signal(**{**signal.__dict__, "position_size_pct": signal.position_size_pct * 0.5})
@@ -89,6 +90,7 @@ class RiskManager:
 
     @staticmethod
     def _reject_bad_stop(signal: Signal) -> Optional[RiskDecision]:
+        """Reject signals that have no positive stop-loss set."""
         if signal.stop_loss and signal.stop_loss > 0:
             return None
         return RiskDecision(
@@ -98,6 +100,7 @@ class RiskManager:
         )
 
     def _reject_daily_trade_cap(self) -> Optional[RiskDecision]:
+        """Reject if the session trade count has hit ``max_daily_trades``."""
         cap = self.risk_cfg.get("max_daily_trades", 20)
         if self._daily_trade_count < cap:
             return None
@@ -108,6 +111,7 @@ class RiskManager:
         )
 
     def _reject_duplicate_symbol(self, signal: Signal) -> Optional[RiskDecision]:
+        """Reject if the same symbol was traded within ``duplicate_block_seconds``."""
         dup_block = self.risk_cfg.get("duplicate_block_seconds", 60)
         elapsed = time.time() - self._last_trade_times.get(signal.symbol, 0)
         if elapsed >= dup_block:
@@ -119,6 +123,7 @@ class RiskManager:
         )
 
     def _reject_max_positions(self, portfolio: PortfolioState) -> Optional[RiskDecision]:
+        """Reject if the portfolio already holds ``max_concurrent`` positions."""
         cap = self.risk_cfg.get("max_concurrent", 5)
         if portfolio.n_positions < cap:
             return None
@@ -131,6 +136,7 @@ class RiskManager:
     def _apply_position_and_leverage(
         self, signal: Signal, portfolio: PortfolioState, modifications: List[str]
     ) -> Tuple[Signal, List[str]]:
+        """Apply position sizing then cap leverage to 1.0 if leverage check fails."""
         signal, size_mods = self._apply_position_sizing(signal, portfolio)
         modifications = [*modifications, *size_mods]
         leverage_ok, lev_reason = self._check_leverage(signal, portfolio)
@@ -142,6 +148,7 @@ class RiskManager:
     def _finalize_approval(
         self, signal: Signal, portfolio: PortfolioState, modifications: List[str]
     ) -> RiskDecision:
+        """Record the trade, update peak equity, and return an approved RiskDecision."""
         self._daily_trade_count += 1
         self._last_trade_times[signal.symbol] = time.time()
         if portfolio.peak_equity < portfolio.equity:

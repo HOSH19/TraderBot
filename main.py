@@ -118,6 +118,7 @@ def load_state_snapshot() -> dict:
 
 
 def _bar_symbol(bar, symbols: list) -> str:
+    """Return the symbol from a streaming bar, falling back to the primary symbol."""
     return bar.symbol if hasattr(bar, "symbol") else symbols[0]
 
 
@@ -135,6 +136,7 @@ def _append_stream_bar(bar, sym: str, bars_by_symbol: dict) -> bool:
 
 
 def _allocation_fractions(portfolio) -> dict:
+    """Return current position weights as fractions of equity; empty if equity is zero."""
     if portfolio.equity <= 0:
         return {}
     return {
@@ -143,7 +145,8 @@ def _allocation_fractions(portfolio) -> dict:
     }
 
 
-def _sync_position_mark_prices(portfolio, bars_by_symbol: dict, position_tracker):
+def _sync_position_mark_prices(portfolio, bars_by_symbol: dict, position_tracker) -> None:
+    """Update each tracked position's mark price from the latest bar close."""
     for sym, _pos in portfolio.positions.items():
         hist = bars_by_symbol.get(sym)
         if hist is not None and len(hist) > 0:

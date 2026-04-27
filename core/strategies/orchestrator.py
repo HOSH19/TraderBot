@@ -3,7 +3,7 @@
 import logging
 from typing import Dict, List, Optional
 
-import pandas as pd
+import pandas as pd  # noqa: F401 — used in type annotation for bars_by_symbol
 
 from core.hmm.regime_info import RegimeInfo
 from core.hmm.regime_state import RegimeState

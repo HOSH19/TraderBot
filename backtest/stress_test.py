@@ -155,7 +155,7 @@ def run_regime_misclassification(
         shuffled_bars = bars.copy()
         shuffled_bars.columns = [c.lower() for c in shuffled_bars.columns]
         shuffled_bars["close"] = rng.permutation(shuffled_bars["close"].values)
-        shuffled_bars["open"] = shuffled_bars["close"].shift(1).fillna(method="bfill")
+        shuffled_bars["open"] = shuffled_bars["close"].shift(1).bfill()
         shuffled_bars["high"] = shuffled_bars["close"] * rng.uniform(1.0, 1.02, len(shuffled_bars))
         shuffled_bars["low"] = shuffled_bars["close"] * rng.uniform(0.98, 1.0, len(shuffled_bars))
 
