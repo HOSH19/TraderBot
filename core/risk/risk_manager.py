@@ -171,46 +171,48 @@ class RiskManager:
         self, signal: Signal, portfolio: PortfolioState
     ) -> Tuple[Signal, List[str]]:
         """Apply Kelly sizing then cap with per-trade risk budget and max single name."""
-        mods = []
-        max_risk = self.risk_cfg.get("max_risk_per_trade", 0.01)
-        min_pos = self.risk_cfg.get("min_position_dollars", 100.0)
+        signal, mods = self._apply_kelly_size(signal)
+        if signal.position_size_pct == 0.0:
+            return signal, mods
+        return self._apply_risk_budget(signal, portfolio, mods)
 
-        # Kelly sizing — uses bars if available, falls back to signal's own size_pct
+    def _apply_kelly_size(self, signal: Signal) -> Tuple[Signal, List[str]]:
+        """Apply Kelly criterion sizing if bars are available."""
         sym_bars = self._symbol_bars.get(signal.symbol)
+        if sym_bars is None:
+            return signal, []
         existing = {s: b for s, b in self._symbol_bars.items() if s != signal.symbol}
-        if sym_bars is not None:
-            kelly_size, kelly_reason = self._kelly.size(signal.symbol, None, None, sym_bars, existing)
-            if kelly_size == 0.0:
-                return Signal(**{**signal.__dict__, "position_size_pct": 0.0}), [kelly_reason]
-            signal = Signal(**{**signal.__dict__, "position_size_pct": min(signal.position_size_pct, kelly_size)})
-            mods.append(kelly_reason)
+        kelly_size, reason = self._kelly.size(signal.symbol, None, None, sym_bars, existing)
+        if kelly_size == 0.0:
+            return Signal(**{**signal.__dict__, "position_size_pct": 0.0}), [reason]
+        return Signal(**{**signal.__dict__, "position_size_pct": min(signal.position_size_pct, kelly_size)}), [reason]
 
+    def _apply_risk_budget(
+        self, signal: Signal, portfolio: PortfolioState, mods: List[str]
+    ) -> Tuple[Signal, List[str]]:
+        """Cap position size by per-trade risk budget and single-name limit."""
         risk_per_share = abs(signal.entry_price - signal.stop_loss)
         if risk_per_share <= 0:
-            return signal, ["stop_loss equals entry, using min size"]
+            return signal, [*mods, "stop_loss equals entry, using min size"]
 
-        max_risk_dollars = portfolio.equity * max_risk
-        gap_mult = self.risk_cfg.get("gap_risk_multiplier", 3.0)
-        overnight_risk = risk_per_share * gap_mult
-        adjusted_risk = min(max_risk_dollars / overnight_risk, max_risk_dollars / risk_per_share)
-        risk_based_shares = int(adjusted_risk / risk_per_share)
-        risk_based_value = risk_based_shares * signal.entry_price
-
-        max_single = self.risk_cfg.get("max_single_position", 0.15)
-        max_value = portfolio.equity * max_single
-        size_value = min(risk_based_value, max_value)
-
+        size_value = self._risk_budget_value(signal, portfolio, risk_per_share)
+        min_pos = self.risk_cfg.get("min_position_dollars", 100.0)
         if size_value < min_pos:
-            mods.append(f"Position size ${size_value:.0f} below minimum ${min_pos:.0f}")
-            return Signal(**{**signal.__dict__, "position_size_pct": 0.0}), mods
+            return Signal(**{**signal.__dict__, "position_size_pct": 0.0}), [*mods, f"Position ${size_value:.0f} below min ${min_pos:.0f}"]
 
-        size_pct = size_value / portfolio.equity
-        size_pct = min(size_pct, signal.position_size_pct)
-
+        size_pct = min(size_value / portfolio.equity, signal.position_size_pct)
         if size_pct < signal.position_size_pct:
-            mods.append(f"Size capped at {size_pct*100:.1f}% by risk rules (was {signal.position_size_pct*100:.1f}%)")
-
+            mods = [*mods, f"Size capped at {size_pct*100:.1f}% by risk rules (was {signal.position_size_pct*100:.1f}%)"]
         return Signal(**{**signal.__dict__, "position_size_pct": size_pct}), mods
+
+    def _risk_budget_value(self, signal: Signal, portfolio: PortfolioState, risk_per_share: float) -> float:
+        """Dollar value of position allowed by overnight risk budget and single-name cap."""
+        max_risk_dollars = portfolio.equity * self.risk_cfg.get("max_risk_per_trade", 0.01)
+        gap_mult = self.risk_cfg.get("gap_risk_multiplier", 3.0)
+        shares = int(min(max_risk_dollars / (risk_per_share * gap_mult), max_risk_dollars / risk_per_share))
+        risk_value = shares * signal.entry_price
+        max_value = portfolio.equity * self.risk_cfg.get("max_single_position", 0.15)
+        return min(risk_value, max_value)
 
     def _check_leverage(
         self, signal: Signal, portfolio: PortfolioState
@@ -258,6 +260,3 @@ class RiskManager:
         """Clear the per-session trade counter (e.g. at session open)."""
         self._daily_trade_count = 0
 
-    def reset_weekly_counters(self) -> None:
-        """Placeholder for weekly risk state resets (currently no-op)."""
-        pass

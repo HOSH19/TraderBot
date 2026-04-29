@@ -88,21 +88,6 @@ class HMMEngine:
     def is_flickering(self) -> bool:
         return self._stability.is_flickering()
 
-    def get_transition_matrix(self) -> np.ndarray:
-        if self._model is None:
-            raise RuntimeError("Model not trained.")
-        return self._model.transmat_
-
-    def get_current_regime_info(self) -> Optional[RegimeInfo]:
-        state = self._stability.current_state
-        if state is None or not self.regime_infos:
-            return None
-        return self.regime_infos[state.state_id]
-
-    def detect_regime_change(self) -> bool:
-        stability_bars = self.config.get("stability_bars", 3)
-        return self._stability.consecutive_bars == stability_bars
-
     # ------------------------------------------------------------------ #
     # Persistence                                                          #
     # ------------------------------------------------------------------ #

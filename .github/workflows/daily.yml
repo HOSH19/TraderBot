@@ -2,7 +2,9 @@ name: Daily regime trader
 
 on:
   schedule:
-    # Every calendar day (7/7) at 21:05 UTC (~4:05 PM ET). run_daily branches on market open vs closed.
+    # Pre-market summary — Mon–Fri at 12:30 UTC (8:30 AM ET). Market is closed → Telegram snapshot only.
+    - cron: "30 12 * * 1-5"
+    # Post-close run — every day at 21:05 UTC (~4:05 PM ET). Branches on market open vs closed.
     - cron: "5 21 * * *"
   workflow_dispatch:
 
@@ -24,7 +26,6 @@ jobs:
       ALPACA_PAPER: ${{ secrets.ALPACA_PAPER }}
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      NEWSAPI_KEY: ${{ secrets.NEWSAPI_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -63,7 +64,6 @@ jobs:
           check "ALPACA_PAPER"        "${ALPACA_PAPER}"        required
           check "TELEGRAM_BOT_TOKEN"  "${TELEGRAM_BOT_TOKEN}"  required
           check "TELEGRAM_CHAT_ID"    "${TELEGRAM_CHAT_ID}"    required
-          check "NEWSAPI_KEY"         "${NEWSAPI_KEY}"         required
           if [ "$ok" -eq 0 ]; then
             echo "If secrets live in an Environment, the job's \`environment:\` name must match that environment name exactly."
             exit 1

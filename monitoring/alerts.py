@@ -81,31 +81,3 @@ class AlertManager:
             f"(p={current_state.probability:.2f})",
         )
 
-    def on_large_pnl(self, symbol: str, pnl_pct: float, threshold: float = 0.05):
-        """Send a large_pnl alert when a position's gain or loss exceeds the threshold.
-
-        Args:
-            symbol: Ticker symbol of the position.
-            pnl_pct: Unrealized P&L as a decimal (e.g. 0.07 for +7%).
-            threshold: Absolute P&L fraction that triggers the alert (default 5%).
-        """
-        if abs(pnl_pct) >= threshold:
-            direction = "gain" if pnl_pct > 0 else "loss"
-            self.send("large_pnl", f"Large {direction}: {symbol} {pnl_pct*100:+.1f}%")
-
-    def on_data_feed_down(self, symbol: str):
-        """Send a data_feed_down alert when price data cannot be retrieved for a symbol."""
-        self.send("data_feed_down", f"Data feed down for {symbol}")
-
-    def on_api_error(self, error: str):
-        """Send an api_lost alert when the Alpaca broker API raises an unexpected error."""
-        self.send("api_lost", f"Alpaca API error: {error}")
-
-    def on_flicker_exceeded(self, flicker_rate: int, threshold: int):
-        """Send a flicker_exceeded alert when the HMM regime changes too frequently.
-
-        Args:
-            flicker_rate: Number of regime transitions observed in the flicker window.
-            threshold: Maximum allowed transitions before triggering the alert.
-        """
-        self.send("flicker_exceeded", f"HMM flicker rate {flicker_rate} exceeds threshold {threshold}")

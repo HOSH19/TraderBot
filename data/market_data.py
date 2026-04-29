@@ -39,9 +39,6 @@ class MarketData:
     def get_snapshot(self, symbol: str) -> Optional[dict]:
         return self._fetcher.get_snapshot(symbol)
 
-    def get_cached_bars(self, symbol: str) -> Optional[pd.DataFrame]:
-        return self._cache.get(symbol)
-
     def subscribe_bars(self, symbols: List[str], timeframe: str, callback: Callable) -> None:
         self._stream.subscribe_bars(symbols, callback)
 

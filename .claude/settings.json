@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest tests/ -q)",
+      "Bash(python3 -m pytest tests/ -q)",
+      "Bash(python3 -m pytest tests/ -q --timeout=60)",
+      "Bash(python3 -m pytest tests/test_indicators.py tests/test_kelly.py tests/test_technical_filter.py tests/test_circuit_breaker.py -v)",
+      "Bash(python3 -m pytest tests/test_indicators.py tests/test_kelly.py tests/test_technical_filter.py tests/test_circuit_breaker.py -q)"
+    ]
+  }
+}

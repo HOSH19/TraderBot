@@ -66,35 +66,6 @@ class PositionTracker:
                 self.portfolio.positions[symbol].current_price = price
                 self.portfolio.last_updated = utc_now()
 
-    def on_fill(self, symbol: str, qty: float, price: float, side: str, trade_id: str, regime: str = ""):
-        """Merge a BUY/SELL fill into ``portfolio.positions`` and refresh account equity from Alpaca."""
-        with self._lock:
-            if side.upper() == "BUY":
-                if symbol in self.portfolio.positions:
-                    pos = self.portfolio.positions[symbol]
-                    total_shares = pos.shares + qty
-                    pos.entry_price = (pos.entry_price * pos.shares + price * qty) / total_shares
-                    pos.shares = total_shares
-                else:
-                    self.portfolio.positions[symbol] = Position(
-                        symbol=symbol,
-                        shares=qty,
-                        entry_price=price,
-                        entry_time=utc_now(),
-                        current_price=price,
-                        stop_loss=0.0,
-                        regime_at_entry=regime,
-                        trade_id=trade_id,
-                    )
-            elif side.upper() == "SELL":
-                if symbol in self.portfolio.positions:
-                    pos = self.portfolio.positions[symbol]
-                    pos.shares -= qty
-                    if pos.shares <= 0:
-                        del self.portfolio.positions[symbol]
-
-        self._refresh_equity()
-
     def update_stop(self, symbol: str, new_stop: float):
         """Update the stop-loss price for the given symbol's tracked position."""
         with self._lock:

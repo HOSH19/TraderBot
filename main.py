@@ -308,7 +308,6 @@ def run_trading_loop(config: dict, dry_run: bool = False):
 
     schedule.every().monday.at("09:00").do(weekly_retrain)
     schedule.every().day.at("00:00").do(risk_manager.reset_daily_counters)
-    schedule.every().monday.at("00:00").do(risk_manager.reset_weekly_counters)
     schedule.every().monday.at("00:00").do(position_tracker.reset_weekly)
     schedule.every().day.at("00:00").do(position_tracker.reset_daily)
 
