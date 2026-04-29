@@ -85,8 +85,9 @@ def test_no_look_ahead_bias():
     else:
         pos_l = int(pos_l) if np.isscalar(pos_l) else int(pos_l.flat[0])
 
-    alpha_s = hmm._forward_pass(fm_s)
-    alpha_l = hmm._forward_pass(fm_l)
+    from core.hmm.forward_algorithm import forward_pass
+    alpha_s = forward_pass(hmm._model.log_emission_matrix(fm_s), hmm._model.startprob_, hmm._model.transmat_)
+    alpha_l = forward_pass(hmm._model.log_emission_matrix(fm_l), hmm._model.startprob_, hmm._model.transmat_)
 
     sid_s = int(np.argmax(alpha_s[-1]))
     sid_l = int(np.argmax(alpha_l[pos_l]))

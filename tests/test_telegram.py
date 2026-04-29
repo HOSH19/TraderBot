@@ -74,15 +74,12 @@ class TestTelegramNotifier:
             orders_placed=[{"symbol": "SPY", "side": "BUY", "qty": 50, "price": 520.82}],
             positions=[{"symbol": "SPY", "shares": 200, "pnl_pct": 1.2}],
             paper_trading=True,
-            news={"SPY": {"title": "Test headline", "source": "Test", "url": "https://example.com", "time_ago": "1h ago"}},
         )
         assert result is True
         assert len(captured) == 1
         body = captured[0]
         assert "HMM TRADER DAILY BRIEFING" in body
         assert "From Peak" not in body
-        assert "TOP NEWS" in body
-        assert "Test headline" in body
 
 
 if __name__ == "__main__":

@@ -273,6 +273,7 @@ def run_trading_loop(config: dict, dry_run: bool = False):
                 order_executor.close_all_positions()
             return
 
+        risk_manager.update_bars(bars_by_symbol)
         for sig in signals:
             rd = risk_manager.validate_signal(sig, portfolio)
             if rd.approved:

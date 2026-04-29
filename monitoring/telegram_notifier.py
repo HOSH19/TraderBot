@@ -1,7 +1,4 @@
-"""HTML Telegram notifications for briefings, summaries, and trade chatter.
-
-Configure ``TELEGRAM_BOT_TOKEN`` and ``TELEGRAM_CHAT_ID`` in the environment.
-"""
+"""Thin Telegram Bot API sender — message building lives in monitoring.messages."""
 
 import logging
 import os
@@ -10,78 +7,51 @@ from typing import List, Optional
 
 import requests
 
+from monitoring.messages import daily_briefing_message, market_summary_message
+
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 
-
-def _strip_redundant_source_from_title(title: str, source: str) -> str:
-    """Remove a trailing ' — Source' suffix from the headline if present (APIs often duplicate source)."""
-    title = (title or "").strip()
-    src = (source or "").strip()
-    if not src:
-        return title
-    for suffix in (f" — {src}", f" - {src}"):
-        if title.endswith(suffix):
-            return title[: -len(suffix)].rstrip()
-    return title
-
-
-def _format_news_section(news: dict) -> list:
-    """Format news dict {symbol: article|None} into Telegram message lines."""
-    articles = [(sym, a) for sym, a in news.items() if a]
-    if not articles:
-        return []
-
-    lines = ["", "<b>📰 TOP NEWS</b>"]
-    for sym, a in articles:
-        time_tag = f"  <i>{a['time_ago']}</i>" if a.get("time_ago") else ""
-        source_tag = f" — {a['source']}" if a.get("source") else ""
-        title = _strip_redundant_source_from_title(a.get("title", ""), a.get("source", ""))
-        url = a.get("url", "")
-        if url:
-            lines.append(f'• <b>{sym}</b>: <a href="{url}">{title}</a>{source_tag}{time_tag}')
-        else:
-            lines.append(f"• <b>{sym}</b>: {title}{source_tag}{time_tag}")
-    return lines
+_ALERT_EMOJI = {
+    "circuit_breaker": "🚨",
+    "regime_change": "🔄",
+    "large_pnl": "💰",
+    "error": "❌",
+    "halted": "🛑",
+}
 
 
 class TelegramNotifier:
     """Thin ``requests`` wrapper around Telegram Bot API ``sendMessage``."""
 
     def __init__(self) -> None:
-        """Read token/chat id from env and set ``enabled`` when both are present."""
-        token = os.getenv("TELEGRAM_BOT_TOKEN", "") or ""
-        chat_id = os.getenv("TELEGRAM_CHAT_ID", "") or ""
-        self.token = token.strip()
-        self.chat_id = str(chat_id).strip()
-        self.enabled = bool(self.token and self.chat_id)
+        token = (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip()
+        chat_id = str((os.getenv("TELEGRAM_CHAT_ID") or "")).strip()
+        self.token = token
+        self.chat_id = chat_id
+        self.enabled = bool(token and chat_id)
 
     def send(self, message: str) -> bool:
-        """POST ``message`` with ``parse_mode=HTML``.
-
-        Returns:
-            ``True`` on HTTP 200 from Telegram.
-        """
         if not self.enabled:
             return False
         try:
             resp = requests.post(
                 TELEGRAM_API.format(token=self.token),
-                json={
-                    "chat_id": self.chat_id,
-                    "text": message,
-                    "parse_mode": "HTML",
-                },
+                json={"chat_id": self.chat_id, "text": message, "parse_mode": "HTML"},
                 timeout=10,
             )
             if resp.status_code == 200:
                 return True
-            logger.warning(f"Telegram send failed: {resp.status_code} {resp.text}")
+            logger.warning("Telegram send failed: %s %s", resp.status_code, resp.text)
             return False
         except Exception as e:
-            logger.error(f"Telegram error: {e}")
+            logger.error("Telegram error: %s", e)
             return False
+
+    def send_alert(self, event: str, detail: str) -> bool:
+        emoji = _ALERT_EMOJI.get(event, "⚠️")
+        return self.send(f"{emoji} <b>REGIME TRADER ALERT</b>\n\n<b>{event.upper()}</b>\n{detail}")
 
     def send_daily_briefing(
         self,
@@ -98,77 +68,25 @@ class TelegramNotifier:
         orders_placed: List[dict],
         positions: List[dict],
         paper_trading: bool,
-        news: Optional[dict] = None,
         error: Optional[str] = None,
     ) -> bool:
-        """Build the multi-section EOD briefing (regime, P&L, signals, news).
-
-        Returns:
-            Result of the final :meth:`send` call.
-        """
-        mode_tag = "📄 PAPER" if paper_trading else "💵 LIVE"
-        regime_emoji = {
-            "BULL": "🐂", "STRONG_BULL": "🚀", "EUPHORIA": "🎉",
-            "NEUTRAL": "😐", "WEAK_BULL": "📈", "WEAK_BEAR": "📉",
-            "BEAR": "🐻", "STRONG_BEAR": "❄️", "CRASH": "💥",
-        }.get(regime_label, "❓")
-
-        cb_emoji = "✅" if circuit_breaker == "NORMAL" else "⚠️"
-        pnl_emoji = "📈" if daily_pnl >= 0 else "📉"
-        flicker_tag = " ⚡ FLICKERING" if is_flickering else ""
-
-        lines = [
-            f"<b>🤖 HMM TRADER DAILY BRIEFING</b>",
-            f"<b>📅 {date.strftime('%A, %b %d %Y')}</b>  |  {mode_tag}",
-            "",
-            f"<b>📊 REGIME</b>",
-            f"{regime_emoji} <b>{regime_label}</b> ({regime_prob*100:.0f}% confidence){flicker_tag}",
-            f"Stability: {regime_stability} bars",
-            "",
-            f"<b>💼 PORTFOLIO</b>",
-            f"Equity: <b>${equity:,.2f}</b>",
-            f"{pnl_emoji} Daily P&L: <b>{daily_pnl:+,.2f} ({daily_pnl_pct:+.2f}%)</b>",
-            f"Circuit Breaker: {circuit_breaker} {cb_emoji}",
-        ]
-
-        if signals:
-            lines += ["", "<b>🎯 TODAY'S SIGNALS</b>"]
-            for s in signals:
-                lines.append(
-                    f"• {s['symbol']}: {s['direction']} {s['alloc_pct']:.0f}% "
-                    f"@ ${s['entry']:.2f}"
-                )
-        else:
-            lines += ["", "🎯 <b>No signals today</b> (no rebalance needed)"]
-
-        if orders_placed:
-            lines += ["", "<b>📋 ORDERS PLACED</b>"]
-            for o in orders_placed:
-                lines.append(f"• {o['symbol']}: {o['side']} {o['qty']} shares @ ${o['price']:.2f} (LIMIT)")
-        else:
-            lines += ["", "📋 No orders placed"]
-
-        if positions:
-            lines += ["", "<b>📦 OPEN POSITIONS</b>"]
-            for p in positions:
-                pnl_sign = "+" if p['pnl_pct'] >= 0 else ""
-                lines.append(
-                    f"• {p['symbol']}: {p['shares']} shares  "
-                    f"{pnl_sign}{p['pnl_pct']:.1f}%"
-                )
-
-        if news:
-            news_lines = _format_news_section(news)
-            if news_lines:
-                lines += news_lines
-
-        if error:
-            lines += ["", f"⚠️ <b>ERROR:</b> {error}"]
-
-        lines += ["", f"<i>Next run: tomorrow after market close</i>"]
-
-        message = "\n".join(lines)
-        return self.send(message)
+        msg = daily_briefing_message(
+            date=date,
+            regime_label=regime_label,
+            regime_prob=regime_prob,
+            regime_stability=regime_stability,
+            is_flickering=is_flickering,
+            equity=equity,
+            daily_pnl=daily_pnl,
+            daily_pnl_pct=daily_pnl_pct,
+            circuit_breaker=circuit_breaker,
+            signals=signals,
+            orders_placed=orders_placed,
+            positions=positions,
+            paper_trading=paper_trading,
+            error=error,
+        )
+        return self.send(msg)
 
     def send_market_summary(
         self,
@@ -185,101 +103,20 @@ class TelegramNotifier:
         paper_trading: bool,
         hmm_age_days: int = 0,
         hmm_stale_max_days: int = 3,
-        news: Optional[dict] = None,
     ) -> bool:
-        """Weekend / post-close style summary with regime, book, quotes, and optional news.
-
-        Returns:
-            Boolean from :meth:`send` after joining all sections.
-        """
-        mode_tag = "📄 PAPER" if paper_trading else "💵 LIVE"
-        regime_emoji = {
-            "BULL": "🐂", "STRONG_BULL": "🚀", "EUPHORIA": "🎉",
-            "NEUTRAL": "😐", "WEAK_BULL": "📈", "WEAK_BEAR": "📉",
-            "BEAR": "🐻", "STRONG_BEAR": "❄️", "CRASH": "💥",
-        }.get(regime_label, "❓")
-
-        flicker_tag = " ⚡ FLICKERING" if is_flickering else ""
-        stale_tag = (
-            f"  ⚠️ model {hmm_age_days}d old"
-            if hmm_age_days > hmm_stale_max_days
-            else ""
+        msg = market_summary_message(
+            date=date,
+            market_status=market_status,
+            next_open=next_open,
+            regime_label=regime_label,
+            regime_prob=regime_prob,
+            regime_stability=regime_stability,
+            is_flickering=is_flickering,
+            equity=equity,
+            positions=positions,
+            stock_prices=stock_prices,
+            paper_trading=paper_trading,
+            hmm_age_days=hmm_age_days,
+            hmm_stale_max_days=hmm_stale_max_days,
         )
-        if market_status == "Weekend":
-            market_line = (
-                f"🌙 <b>Weekend</b> — US session closed  ·  "
-                f"<i>Next open:</i> {next_open}"
-            )
-        elif market_status == "Post-close":
-            market_line = (
-                f"🌆 <b>Post-close</b> — regular session ended  ·  "
-                f"<i>Next open:</i> {next_open}"
-            )
-        else:
-            market_line = (
-                f"📊 <b>{market_status}</b>  ·  <i>Next open:</i> {next_open}"
-            )
-
-        lines = [
-            f"<b>🤖 REGIME TRADER MARKET SUMMARY</b>",
-            f"<b>📅 {date.strftime('%A, %b %d %Y')}</b>  |  {mode_tag}",
-            market_line,
-            "",
-            f"<b>📊 REGIME (last close){stale_tag}</b>",
-            f"{regime_emoji} <b>{regime_label}</b> ({regime_prob*100:.0f}% confidence){flicker_tag}",
-            f"Stability: {regime_stability} bars",
-            "",
-            f"<b>💼 PORTFOLIO</b>",
-            f"Equity: <b>${equity:,.2f}</b>",
-        ]
-
-        if positions:
-            lines.append("")
-            lines.append("<b>📦 OPEN POSITIONS</b>")
-            for p in positions:
-                pnl_emoji = "📈" if p["pnl_pct"] >= 0 else "📉"
-                pnl_sign = "+" if p["pnl_pct"] >= 0 else ""
-                lines.append(
-                    f"• {p['symbol']}: {p['shares']} shares  "
-                    f"{pnl_emoji} {pnl_sign}{p['pnl_pct']:.1f}%"
-                )
-        else:
-            lines += ["", "📦 No open positions"]
-
-        if stock_prices:
-            lines += ["", "<b>📉 PRICE SNAPSHOT (last close)</b>"]
-            for s in stock_prices:
-                wk_sign = "+" if s["week_chg_pct"] >= 0 else ""
-                wk_emoji = "📈" if s["week_chg_pct"] >= 0 else "📉"
-                lines.append(
-                    f"• <b>{s['symbol']}</b>: ${s['close']:.2f}  "
-                    f"{wk_emoji} {wk_sign}{s['week_chg_pct']:.1f}% wk"
-                )
-
-        if news:
-            news_lines = _format_news_section(news)
-            if news_lines:
-                lines += news_lines
-
-        return self.send("\n".join(lines))
-
-    def send_alert(self, event: str, detail: str) -> bool:
-        """Prefix ``detail`` with an emoji chosen from ``event`` and :meth:`send`.
-
-        Args:
-            event: Logical alert name (``circuit_breaker``, ``regime_change``, etc.).
-            detail: Body text shown after the emoji.
-
-        Returns:
-            Boolean from :meth:`send`.
-        """
-        emoji_map = {
-            "circuit_breaker": "🚨",
-            "regime_change": "🔄",
-            "large_pnl": "💰",
-            "error": "❌",
-            "halted": "🛑",
-        }
-        emoji = emoji_map.get(event, "⚠️")
-        message = f"{emoji} <b>REGIME TRADER ALERT</b>\n\n<b>{event.upper()}</b>\n{detail}"
-        return self.send(message)
+        return self.send(msg)

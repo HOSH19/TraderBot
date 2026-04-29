@@ -24,6 +24,7 @@ from core.timeutil import ensure_utc, utc_now
 
 HMM_MODEL_FILE = os.path.join(BASE_DIR, "hmm_model.pkl")
 STATE_SNAPSHOT_FILE = os.path.join(BASE_DIR, "state_snapshot.json")
+STATE_DB_FILE = os.path.join(BASE_DIR, "state.db")
 LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 
@@ -40,8 +41,20 @@ def setup_logging(config: dict) -> None:
     setup_structured_logging(config)
 
 
+def _get_store():
+    from monitoring.state_store import StateStore
+    return StateStore(STATE_DB_FILE)
+
+
 def _load_prev_snapshot() -> dict:
-    """Return ``state_snapshot.json`` contents or ``{}`` if missing/unreadable."""
+    """Return latest snapshot from SQLite, falling back to legacy JSON."""
+    try:
+        snap = _get_store().load_snapshot()
+        if snap:
+            return snap
+    except Exception:
+        pass
+    # Legacy JSON fallback
     if os.path.exists(STATE_SNAPSHOT_FILE):
         try:
             with open(STATE_SNAPSHOT_FILE) as f:
@@ -52,25 +65,15 @@ def _load_prev_snapshot() -> dict:
 
 
 def _save_snapshot(portfolio, regime_state, prev_snapshot: dict) -> None:
-    """Write ``STATE_SNAPSHOT_FILE`` with equity, regime summary, and session anchors.
-
-    Args:
-        portfolio: Live ``PortfolioState`` snapshot.
-        regime_state: Latest filtered regime (may be ``None`` in edge cases).
-        prev_snapshot: Ignored by the current implementation (kept for call-site compatibility).
-    """
-    snapshot = {
-        "timestamp": utc_now().isoformat(),
-        "equity": portfolio.equity,
-        "cash": portfolio.cash,
-        "daily_start_equity": portfolio.daily_start_equity or portfolio.equity,
-        "weekly_start_equity": portfolio.weekly_start_equity or portfolio.equity,
-        "circuit_breaker_status": portfolio.circuit_breaker_status,
-        "regime": regime_state.label if regime_state else "UNKNOWN",
-        "regime_prob": float(regime_state.probability) if regime_state else 0.0,
-    }
-    with open(STATE_SNAPSHOT_FILE, "w") as f:
-        json.dump(snapshot, f, indent=2)
+    try:
+        store = _get_store()
+        store.save_snapshot(portfolio, regime_state)
+        store.append_equity(utc_now(), portfolio.equity, portfolio.cash)
+        if regime_state:
+            store.append_regime(utc_now(), regime_state.label, regime_state.probability, regime_state.is_confirmed)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error("StateStore save failed: %s", e)
 
 
 def _fetch_bars(market_data, symbols, timeframe, logger):
@@ -221,7 +224,7 @@ def _execute_signals_to_orders(signals, portfolio, risk_manager, order_executor,
 def _send_closed_market_telegram(
     telegram, logger, *,
     market_status, next_open_str, regime_state, hmm, stale_max,
-    equity, positions_list, stock_prices, paper_trading, news,
+    equity, positions_list, stock_prices, paper_trading,
 ):
     sent = telegram.send_market_summary(
         date=utc_now(),
@@ -237,7 +240,6 @@ def _send_closed_market_telegram(
         paper_trading=paper_trading,
         hmm_age_days=(utc_now() - ensure_utc(hmm.training_date)).days if hmm.training_date else 0,
         hmm_stale_max_days=stale_max,
-        news=news,
     )
     if telegram.enabled and not sent:
         logger.error(
@@ -249,7 +251,7 @@ def _send_closed_market_telegram(
 def _send_open_market_briefing(
     telegram, logger, *,
     regime_state, hmm, equity, portfolio, signal_dicts, orders_placed,
-    positions_list, paper_trading, news,
+    positions_list, paper_trading,
 ):
     daily_pnl = equity - (portfolio.daily_start_equity or equity)
     d0 = portfolio.daily_start_equity or 0.0
@@ -268,7 +270,6 @@ def _send_open_market_briefing(
         orders_placed=orders_placed,
         positions=positions_list,
         paper_trading=paper_trading,
-        news=news,
     )
     if telegram.enabled and not sent:
         logger.error(
@@ -293,7 +294,6 @@ def run() -> None:
     from core.risk import RiskManager
     from core.signal_generator import SignalGenerator
     from data.market_data import MarketData
-    from data.news_fetcher import fetch_news_for_symbols
     from monitoring.telegram_notifier import TelegramNotifier
 
     telegram = TelegramNotifier()
@@ -321,8 +321,6 @@ def run() -> None:
         prev_snapshot = _load_prev_snapshot()
         portfolio, positions_list, equity = _portfolio_and_positions(alpaca, prev_snapshot)
 
-        news = fetch_news_for_symbols(symbols)
-
         if not market_open:
             _send_closed_market_telegram(
                 telegram, logger,
@@ -335,7 +333,6 @@ def run() -> None:
                 positions_list=positions_list,
                 stock_prices=_stock_price_summary(bars_by_symbol),
                 paper_trading=paper_trading,
-                news=news,
             )
             _save_snapshot(portfolio, regime_state, prev_snapshot)
             return
@@ -371,7 +368,6 @@ def run() -> None:
             orders_placed=orders_placed,
             positions_list=positions_list,
             paper_trading=paper_trading,
-            news=news,
         )
 
     except Exception as e:

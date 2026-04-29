@@ -5,6 +5,7 @@ import time
 from typing import Dict, List, Optional, Tuple  # noqa: F401 — Tuple used in return annotations
 
 from core.risk.circuit_breaker import CircuitBreaker
+from core.risk.kelly_sizer import KellySizer
 from core.risk.portfolio_state import PortfolioState
 from core.risk.risk_decision import RiskDecision
 from core.strategies.signal import Signal
@@ -24,8 +25,14 @@ class RiskManager:
         self.cfg = config
         self.risk_cfg = config.get("risk", {})
         self.circuit_breaker = CircuitBreaker(self.risk_cfg)
+        self._kelly = KellySizer(config)
         self._daily_trade_count: int = 0
         self._last_trade_times: Dict[str, float] = {}
+        self._symbol_bars: Dict[str, object] = {}  # populated by caller for Kelly sizing
+
+    def update_bars(self, bars_by_symbol: dict) -> None:
+        """Provide current OHLCV history so Kelly can compute correlations."""
+        self._symbol_bars = bars_by_symbol
 
     def validate_signal(
         self,
@@ -163,14 +170,20 @@ class RiskManager:
     def _apply_position_sizing(
         self, signal: Signal, portfolio: PortfolioState
     ) -> Tuple[Signal, List[str]]:
-        """Cap shares using per-trade risk budget, gap multiplier, and max single name.
-
-        Returns:
-            Adjusted ``Signal`` and human-readable modification notes.
-        """
+        """Apply Kelly sizing then cap with per-trade risk budget and max single name."""
         mods = []
         max_risk = self.risk_cfg.get("max_risk_per_trade", 0.01)
         min_pos = self.risk_cfg.get("min_position_dollars", 100.0)
+
+        # Kelly sizing — uses bars if available, falls back to signal's own size_pct
+        sym_bars = self._symbol_bars.get(signal.symbol)
+        existing = {s: b for s, b in self._symbol_bars.items() if s != signal.symbol}
+        if sym_bars is not None:
+            kelly_size, kelly_reason = self._kelly.size(signal.symbol, None, None, sym_bars, existing)
+            if kelly_size == 0.0:
+                return Signal(**{**signal.__dict__, "position_size_pct": 0.0}), [kelly_reason]
+            signal = Signal(**{**signal.__dict__, "position_size_pct": min(signal.position_size_pct, kelly_size)})
+            mods.append(kelly_reason)
 
         risk_per_share = abs(signal.entry_price - signal.stop_loss)
         if risk_per_share <= 0:

@@ -55,6 +55,18 @@ backtest:
   risk_free_rate: 0.045
   fill_delay_bars: 1             # signal at bar N, fill at bar N+1
 
+technical:
+  rsi_period: 14
+  rsi_bull_min: 50          # momentum valid when RSI in [50, 75]
+  rsi_bull_max: 75
+  rsi_bear_max: 50
+  macd_fast: 12
+  macd_slow: 26
+  macd_signal_period: 9
+  bb_period: 20
+  bb_std: 2.0
+  min_bars: 60              # bars needed before technical filter activates
+
 monitoring:
   dashboard_refresh_seconds: 5
   alert_rate_limit_minutes: 15
