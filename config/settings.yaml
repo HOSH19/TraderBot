@@ -1,9 +1,14 @@
 broker:
   paper_trading: true
-  symbols: [AAPL, TSLA, GOOGL, NVDA, AMD]
+  symbols: [AAPL, MSFT, GOOGL, AMZN, NVDA, META, TSLA, AMD, AVGO, TSM,
+            JPM, GS, V, MA,
+            XOM, CVX,
+            UNH, JNJ,
+            SPY, QQQ]
   timeframe: 1Day
 
 hmm:
+  regime_symbols: [SPY, QQQ, IWM, DIA]  # averaged for regime detection; must be fetchable
   stale_max_days: 3         # retrain saved model when older than this (see HMMEngine.is_stale)
   emission_type: student_t  # gaussian | student_t
   student_t_dof: 4          # degrees of freedom for Student-t (lower = heavier tails)
@@ -30,9 +35,9 @@ risk:
   max_risk_per_trade: 0.01       # 1% of portfolio per trade
   max_exposure: 0.80             # max total portfolio exposure
   max_leverage: 1.25
-  max_single_position: 0.15      # max 15% in one symbol
+  max_single_position: 0.08      # max 8% in one symbol (~12 full positions fits within 100%)
   max_correlated_exposure: 0.30  # max 30% in correlated group
-  max_concurrent: 5
+  max_concurrent: 20
   max_daily_trades: 20
   daily_dd_reduce: 0.02          # reduce 50% at 2% daily DD
   daily_dd_halt: 0.03            # close all + halt at 3%

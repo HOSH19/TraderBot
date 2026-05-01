@@ -192,6 +192,27 @@ def _append_macro_features(
     return features
 
 
+def get_multi_symbol_feature_matrix(
+    bars_by_symbol: dict,
+    macro_df: Optional[pd.DataFrame] = None,
+    zscore_window: int = 252,
+) -> Tuple[np.ndarray, pd.Index]:
+    """Average features across multiple symbols on their shared date index.
+
+    Each symbol's feature matrix is computed independently and z-scored, then
+    the per-date mean is taken. Only dates present in all symbols are kept.
+    """
+    frames = []
+    for bars in bars_by_symbol.values():
+        feat = compute_features(bars, macro_df=macro_df, zscore_window=zscore_window)
+        frames.append(feat)
+
+    # align on shared index, average, drop any remaining NaNs
+    combined = pd.concat(frames, keys=range(len(frames))).groupby(level=1).mean()
+    valid = combined.dropna()
+    return valid.values, valid.index
+
+
 def get_feature_matrix(
     bars: pd.DataFrame,
     macro_df: Optional[pd.DataFrame] = None,

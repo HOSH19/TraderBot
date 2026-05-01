@@ -32,20 +32,21 @@ class SignalGenerator:
         bars_by_symbol: Dict[str, pd.DataFrame],
         current_allocations: Optional[Dict[str, float]] = None,
     ) -> Tuple[List[Signal], Optional[RegimeState]]:
-        """Run ``predict_regime_filtered`` on ``symbols[0]`` and build orchestrator signals.
+        """Run regime inference averaged across regime_symbols, then build orchestrator signals.
 
         Returns:
             ``(signals, regime_state)`` or ``([], None)`` on insufficient data or HMM errors.
         """
-        primary = symbols[0]
-        primary_bars = bars_by_symbol.get(primary)
+        min_bars = self.cfg.get("hmm", {}).get("min_train_bars", 504)
+        regime_symbols = self.cfg.get("hmm", {}).get("regime_symbols", [symbols[0]])
+        regime_bars = {s: bars_by_symbol[s] for s in regime_symbols if s in bars_by_symbol}
 
-        if primary_bars is None or len(primary_bars) < self.cfg.get("hmm", {}).get("min_train_bars", 504):
+        if not regime_bars or all(len(b) < min_bars for b in regime_bars.values()):
             logger.warning("Insufficient bars for regime detection")
             return [], None
 
         try:
-            regime_state = self.hmm.predict_regime_filtered(primary_bars)
+            regime_state = self.hmm.predict_regime_filtered_multi(regime_bars)
         except Exception as e:
             logger.error(f"HMM prediction failed: {e}. Holding current regime.")
             return [], None

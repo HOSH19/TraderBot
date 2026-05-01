@@ -57,34 +57,38 @@ def load_or_train_hmm(config: dict, market_data, symbols: list):
     Return a ready-to-use HMMEngine, loading from disk or training from scratch.
 
     Loads the saved model if it exists and is fresh (≤ hmm.stale_max_days). Otherwise
-    fetches ~3 years of bars for the primary symbol and trains a new model, saving it.
-    Staleness is decided only by training age, not by whether the exchange is open.
+    fetches ~3 years of bars for each regime symbol, averages features across them,
+    and trains a new model, saving it.
     """
     from core.hmm import HMMEngine
 
     hmm = HMMEngine(config.get("hmm", {}))
-    primary_symbol = symbols[0]
+    regime_symbols = config.get("hmm", {}).get("regime_symbols", [symbols[0]])
     stale_max = int(config.get("hmm", {}).get("stale_max_days", 3))
+    log = logging.getLogger(__name__)
 
     if os.path.exists(HMM_MODEL_FILE):
         hmm.load(HMM_MODEL_FILE)
         if not hmm.is_stale(max_days=stale_max):
             return hmm
-        logging.getLogger(__name__).warning(
-            "HMM stale (>%s days), retraining on %s", stale_max, primary_symbol
-        )
+        log.warning("HMM stale (>%s days), retraining on %s", stale_max, regime_symbols)
     else:
-        logging.getLogger(__name__).warning("No HMM on disk; training on %s", primary_symbol)
+        log.warning("No HMM on disk; training on %s", regime_symbols)
 
-    bars = market_data.get_historical_bars(
-        primary_symbol,
-        timeframe=config.get("broker", {}).get("timeframe", "1Day"),
-        start=utc_now() - timedelta(days=1200),
-    )
-    if bars.empty:
-        raise RuntimeError(f"No historical data returned for {primary_symbol}")
+    timeframe = config.get("broker", {}).get("timeframe", "1Day")
+    start = utc_now() - timedelta(days=1200)
+    bars_by_symbol = {}
+    for sym in regime_symbols:
+        bars = market_data.get_historical_bars(sym, timeframe=timeframe, start=start)
+        if not bars.empty:
+            bars_by_symbol[sym] = bars
+        else:
+            log.warning("No historical data for regime symbol %s, skipping", sym)
 
-    hmm.train(bars)
+    if not bars_by_symbol:
+        raise RuntimeError(f"No historical data returned for any regime symbol: {regime_symbols}")
+
+    hmm.train_multi(bars_by_symbol)
     hmm.save(HMM_MODEL_FILE)
     return hmm
 
