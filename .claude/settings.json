@@ -5,7 +5,16 @@
       "Bash(python3 -m pytest tests/ -q)",
       "Bash(python3 -m pytest tests/ -q --timeout=60)",
       "Bash(python3 -m pytest tests/test_indicators.py tests/test_kelly.py tests/test_technical_filter.py tests/test_circuit_breaker.py -v)",
-      "Bash(python3 -m pytest tests/test_indicators.py tests/test_kelly.py tests/test_technical_filter.py tests/test_circuit_breaker.py -q)"
+      "Bash(python3 -m pytest tests/test_indicators.py tests/test_kelly.py tests/test_technical_filter.py tests/test_circuit_breaker.py -q)",
+      "Bash(git commit -m ' *)",
+      "Bash(git -C /Users/hoshuhan/Documents/passion/trading/regime-trader ls-files hmm_model.pkl)",
+      "Bash(sed -n '47,100p' /Users/hoshuhan/Documents/passion/trading/regime-trader/core/hmm/engine.py)",
+      "Bash(sed -n '55,100p' /Users/hoshuhan/Documents/passion/trading/regime-trader/main.py)",
+      "Bash(git -C /Users/hoshuhan/Documents/passion/trading/regime-trader status)",
+      "Bash(git -C /Users/hoshuhan/Documents/passion/trading/regime-trader add config/settings.yaml core/hmm/engine.py core/signal_generator.py data/feature_engineering.py main.py)",
+      "Bash(git -C /Users/hoshuhan/Documents/passion/trading/regime-trader diff --cached --stat)",
+      "Bash(git -C /Users/hoshuhan/Documents/passion/trading/regime-trader commit -m ' *)",
+      "Bash(git -C /Users/hoshuhan/Documents/passion/trading/regime-trader push)"
     ]
   }
 }
